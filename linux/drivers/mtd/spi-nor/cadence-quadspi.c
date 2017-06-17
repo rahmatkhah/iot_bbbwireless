@@ -695,7 +695,7 @@ static int cqspi_erase(struct spi_nor *nor, loff_t offs)
 	int ret;
 
 	/* Send write enable, then erase commands. */
-	ret = nor->write_reg(nor, SPINOR_OP_WREN, NULL, 0);
+	ret = nor->write_reg(nor, SPINOR_OP_WREN, NULL, 0, 0);
 	if (ret)
 		return ret;
 
@@ -867,7 +867,7 @@ static void cqspi_switch_cs(struct spi_nor *nor)
 	reg &= ~(CQSPI_REG_SIZE_BLOCK_MASK << CQSPI_REG_SIZE_BLOCK_LSB);
 	reg &= ~CQSPI_REG_SIZE_ADDRESS_MASK;
 	reg |= (nor->page_size << CQSPI_REG_SIZE_PAGE_LSB);
-	reg |= (ilog2(nor->mtd.erasesize) << CQSPI_REG_SIZE_BLOCK_LSB);
+	reg |= (ilog2(nor->mtd->erasesize) << CQSPI_REG_SIZE_BLOCK_LSB);
 	reg |= (nor->addr_width - 1);
 	writel(reg, iobase + CQSPI_REG_SIZE);
 
@@ -911,7 +911,8 @@ static int cqspi_read_reg(struct spi_nor *nor, u8 opcode, u8 *buf, int len)
 	return ret;
 }
 
-static int cqspi_write_reg(struct spi_nor *nor, u8 opcode, u8 *buf, int len)
+static int cqspi_write_reg(struct spi_nor *nor, u8 opcode, u8 *buf, int len,
+			   int write_enable)
 {
 	int ret = 0;
 
@@ -1045,10 +1046,11 @@ static int cqspi_setup_flash(struct cqspi_st *cqspi, struct device_node *np)
 			goto err;
 
 		nor = &f_pdata->nor;
-		mtd = &nor->mtd;
+		mtd = &f_pdata->mtd;
 
 		mtd->priv = nor;
 
+		nor->mtd = mtd;
 		nor->dev = dev;
 		nor->flash_node = np;
 		nor->priv = f_pdata;
@@ -1075,7 +1077,7 @@ static int cqspi_setup_flash(struct cqspi_st *cqspi, struct device_node *np)
 err:
 	for (i = 0; i < CQSPI_MAX_CHIPSELECT; i++)
 		if (cqspi->f_pdata[i].mtd.name)
-			mtd_device_unregister(&cqspi->f_pdata[i].nor.mtd);
+			mtd_device_unregister(&cqspi->f_pdata[i].mtd);
 	return ret;
 }
 

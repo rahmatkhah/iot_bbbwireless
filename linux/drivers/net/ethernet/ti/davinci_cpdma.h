@@ -43,7 +43,6 @@ struct cpdma_params {
 	u32			desc_hw_addr;
 	int			desc_mem_size;
 	int			desc_align;
-	u32			descs_pool_size;
 
 	/*
 	 * Some instances of embedded cpdma controllers have extra control and
@@ -82,7 +81,6 @@ int cpdma_ctlr_dump(struct cpdma_ctlr *ctlr);
 
 struct cpdma_chan *cpdma_chan_create(struct cpdma_ctlr *ctlr, int chan_num,
 				     cpdma_handler_fn handler);
-int cpdma_chan_get_rx_buf_num(struct cpdma_ctlr *ctlr);
 int cpdma_chan_destroy(struct cpdma_chan *chan);
 int cpdma_chan_start(struct cpdma_chan *chan);
 int cpdma_chan_stop(struct cpdma_chan *chan);

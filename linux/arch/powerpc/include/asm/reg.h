@@ -227,6 +227,7 @@
 #define   CTRL_TE	0x00c00000	/* thread enable */
 #define   CTRL_RUNLATCH	0x1
 #define SPRN_DAWR	0xB4
+#define SPRN_MPPR	0xB8	/* Micro Partition Prefetch Register */
 #define SPRN_RPR	0xBA	/* Relative Priority Register */
 #define SPRN_CIABR	0xBB
 #define   CIABR_PRIV		0x3
@@ -708,7 +709,6 @@
 #define   MMCR0_FCHV	0x00000001UL /* freeze conditions in hypervisor mode */
 #define SPRN_MMCR1	798
 #define SPRN_MMCR2	785
-#define SPRN_UMMCR2	769
 #define SPRN_MMCRA	0x312
 #define   MMCRA_SDSYNC	0x80000000UL /* SDAR synced with SIAR */
 #define   MMCRA_SDAR_DCACHE_MISS 0x40000000UL
@@ -1194,7 +1194,8 @@
 #ifdef CONFIG_PPC_BOOK3S_64
 #define __mtmsrd(v, l)	asm volatile("mtmsrd %0," __stringify(l) \
 				     : : "r" (v) : "memory")
-#define mtmsr(v)	__mtmsrd((v), 0)
+#define mtmsrd(v)	__mtmsrd((v), 0)
+#define mtmsr(v)	mtmsrd(v)
 #else
 #define mtmsr(v)	asm volatile("mtmsr %0" : \
 				     : "r" ((unsigned long)(v)) \
@@ -1281,15 +1282,6 @@ struct pt_regs;
 
 extern void ppc_save_regs(struct pt_regs *regs);
 
-static inline void update_power8_hid0(unsigned long hid0)
-{
-	/*
-	 *  The HID0 update on Power8 should at the very least be
-	 *  preceded by a a SYNC instruction followed by an ISYNC
-	 *  instruction
-	 */
-	asm volatile("sync; mtspr %0,%1; isync":: "i"(SPRN_HID0), "r"(hid0));
-}
 #endif /* __ASSEMBLY__ */
 #endif /* __KERNEL__ */
 #endif /* _ASM_POWERPC_REG_H */

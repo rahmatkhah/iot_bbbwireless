@@ -112,14 +112,12 @@
 #include <net/raw.h>
 #include <net/icmp.h>
 #include <net/inet_common.h>
-#include <net/ip_tunnels.h>
 #include <net/xfrm.h>
 #include <net/net_namespace.h>
 #include <net/secure_seq.h>
 #ifdef CONFIG_IP_MROUTE
 #include <linux/mroute.h>
 #endif
-#include <net/l3mdev.h>
 
 
 /* The inetsw table contains everything that inet_create needs to
@@ -219,13 +217,17 @@ int inet_listen(struct socket *sock, int backlog)
 		 * shutdown() (rather than close()).
 		 */
 		if ((sysctl_tcp_fastopen & TFO_SERVER_ENABLE) != 0 &&
-		    !inet_csk(sk)->icsk_accept_queue.fastopenq.max_qlen) {
+		    !inet_csk(sk)->icsk_accept_queue.fastopenq) {
 			if ((sysctl_tcp_fastopen & TFO_SERVER_WO_SOCKOPT1) != 0)
-				fastopen_queue_tune(sk, backlog);
+				err = fastopen_init_queue(sk, backlog);
 			else if ((sysctl_tcp_fastopen &
 				  TFO_SERVER_WO_SOCKOPT2) != 0)
-				fastopen_queue_tune(sk,
+				err = fastopen_init_queue(sk,
 				    ((uint)sysctl_tcp_fastopen) >> 16);
+			else
+				err = 0;
+			if (err)
+				goto out;
 
 			tcp_fastopen_init_key_once(true);
 		}
@@ -320,7 +322,7 @@ lookup_protocol:
 	WARN_ON(!answer_prot->slab);
 
 	err = -ENOBUFS;
-	sk = sk_alloc(net, PF_INET, GFP_KERNEL, answer_prot, kern);
+	sk = sk_alloc(net, PF_INET, GFP_KERNEL, answer_prot);
 	if (!sk)
 		goto out;
 
@@ -427,7 +429,6 @@ int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 	struct net *net = sock_net(sk);
 	unsigned short snum;
 	int chk_addr_ret;
-	u32 tb_id = RT_TABLE_LOCAL;
 	int err;
 
 	/* If the socket has its own bind function then use it. (RAW) */
@@ -449,8 +450,7 @@ int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 			goto out;
 	}
 
-	tb_id = l3mdev_fib_table_by_index(net, sk->sk_bound_dev_if) ? : tb_id;
-	chk_addr_ret = inet_addr_type_table(net, addr->sin_addr.s_addr, tb_id);
+	chk_addr_ret = inet_addr_type(net, addr->sin_addr.s_addr);
 
 	/* Not specified by any standard per-se, however it breaks too
 	 * many applications when removed.  It is unfortunate since
@@ -493,8 +493,7 @@ int inet_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 		inet->inet_saddr = 0;  /* Use device */
 
 	/* Make sure we are allowed to bind here. */
-	if ((snum || !inet->bind_address_no_port) &&
-	    sk->sk_prot->get_port(sk, snum)) {
+	if (sk->sk_prot->get_port(sk, snum)) {
 		inet->inet_saddr = inet->inet_rcv_saddr = 0;
 		err = -EADDRINUSE;
 		goto out_release_sock;
@@ -1042,16 +1041,22 @@ void inet_register_protosw(struct inet_protosw *p)
 		goto out_illegal;
 
 	/* If we are trying to override a permanent protocol, bail. */
+	answer = NULL;
 	last_perm = &inetsw[p->type];
 	list_for_each(lh, &inetsw[p->type]) {
 		answer = list_entry(lh, struct inet_protosw, list);
+
 		/* Check only the non-wild match. */
-		if ((INET_PROTOSW_PERMANENT & answer->flags) == 0)
-			break;
-		if (protocol == answer->protocol)
-			goto out_permanent;
-		last_perm = lh;
+		if (INET_PROTOSW_PERMANENT & answer->flags) {
+			if (protocol == answer->protocol)
+				break;
+			last_perm = lh;
+		}
+
+		answer = NULL;
 	}
+	if (answer)
+		goto out_permanent;
 
 	/* Add the new entry after the last permanent entry if any, so that
 	 * the new entry does not override a permanent entry when matched with
@@ -1372,7 +1377,7 @@ static struct sk_buff **inet_gro_receive(struct sk_buff **head,
 	skb_gro_pull(skb, sizeof(*iph));
 	skb_set_transport_header(skb, skb_gro_offset(skb));
 
-	pp = call_gro_receive(ops->callbacks.gro_receive, head, skb);
+	pp = ops->callbacks.gro_receive(head, skb);
 
 out_unlock:
 	rcu_read_unlock();
@@ -1381,19 +1386,6 @@ out:
 	NAPI_GRO_CB(skb)->flush |= flush;
 
 	return pp;
-}
-
-static struct sk_buff **ipip_gro_receive(struct sk_buff **head,
-					 struct sk_buff *skb)
-{
-	if (NAPI_GRO_CB(skb)->encap_mark) {
-		NAPI_GRO_CB(skb)->flush = 1;
-		return NULL;
-	}
-
-	NAPI_GRO_CB(skb)->encap_mark = 1;
-
-	return inet_gro_receive(head, skb);
 }
 
 int inet_recv_error(struct sock *sk, struct msghdr *msg, int len, int *addr_len)
@@ -1438,19 +1430,12 @@ out_unlock:
 	return err;
 }
 
-static int ipip_gro_complete(struct sk_buff *skb, int nhoff)
-{
-	skb->encapsulation = 1;
-	skb_shinfo(skb)->gso_type |= SKB_GSO_IPIP;
-	return inet_gro_complete(skb, nhoff);
-}
-
 int inet_ctl_sock_create(struct sock **sk, unsigned short family,
 			 unsigned short type, unsigned char protocol,
 			 struct net *net)
 {
 	struct socket *sock;
-	int rc = sock_create_kern(net, family, type, protocol, &sock);
+	int rc = sock_create_kern(family, type, protocol, &sock);
 
 	if (rc == 0) {
 		*sk = sock->sk;
@@ -1460,16 +1445,12 @@ int inet_ctl_sock_create(struct sock **sk, unsigned short family,
 		 * we do not wish this socket to see incoming packets.
 		 */
 		(*sk)->sk_prot->unhash(*sk);
+
+		sk_change_net(*sk, net);
 	}
 	return rc;
 }
 EXPORT_SYMBOL_GPL(inet_ctl_sock_create);
-
-u64 snmp_get_cpu_field(void __percpu *mib, int cpu, int offt)
-{
-	return  *(((unsigned long *)per_cpu_ptr(mib, cpu)) + offt);
-}
-EXPORT_SYMBOL_GPL(snmp_get_cpu_field);
 
 unsigned long snmp_fold_field(void __percpu *mib, int offt)
 {
@@ -1477,31 +1458,12 @@ unsigned long snmp_fold_field(void __percpu *mib, int offt)
 	int i;
 
 	for_each_possible_cpu(i)
-		res += snmp_get_cpu_field(mib, i, offt);
+		res += *(((unsigned long *) per_cpu_ptr(mib, i)) + offt);
 	return res;
 }
 EXPORT_SYMBOL_GPL(snmp_fold_field);
 
 #if BITS_PER_LONG==32
-
-u64 snmp_get_cpu_field64(void __percpu *mib, int cpu, int offt,
-			 size_t syncp_offset)
-{
-	void *bhptr;
-	struct u64_stats_sync *syncp;
-	u64 v;
-	unsigned int start;
-
-	bhptr = per_cpu_ptr(mib, cpu);
-	syncp = (struct u64_stats_sync *)(bhptr + syncp_offset);
-	do {
-		start = u64_stats_fetch_begin_irq(syncp);
-		v = *(((u64 *)bhptr) + offt);
-	} while (u64_stats_fetch_retry_irq(syncp, start));
-
-	return v;
-}
-EXPORT_SYMBOL_GPL(snmp_get_cpu_field64);
 
 u64 snmp_fold_field64(void __percpu *mib, int offt, size_t syncp_offset)
 {
@@ -1509,7 +1471,19 @@ u64 snmp_fold_field64(void __percpu *mib, int offt, size_t syncp_offset)
 	int cpu;
 
 	for_each_possible_cpu(cpu) {
-		res += snmp_get_cpu_field64(mib, cpu, offt, syncp_offset);
+		void *bhptr;
+		struct u64_stats_sync *syncp;
+		u64 v;
+		unsigned int start;
+
+		bhptr = per_cpu_ptr(mib, cpu);
+		syncp = (struct u64_stats_sync *)(bhptr + syncp_offset);
+		do {
+			start = u64_stats_fetch_begin_irq(syncp);
+			v = *(((u64 *) bhptr) + offt);
+		} while (u64_stats_fetch_retry_irq(syncp, start));
+
+		res += v;
 	}
 	return res;
 }
@@ -1628,7 +1602,7 @@ static __net_init int inet_init_net(struct net *net)
 	 */
 	seqlock_init(&net->ipv4.ip_local_ports.lock);
 	net->ipv4.ip_local_ports.range[0] =  32768;
-	net->ipv4.ip_local_ports.range[1] =  60999;
+	net->ipv4.ip_local_ports.range[1] =  61000;
 
 	seqlock_init(&net->ipv4.ping_group_range.lock);
 	/*
@@ -1672,8 +1646,8 @@ static struct packet_offload ip_packet_offload __read_mostly = {
 static const struct net_offload ipip_offload = {
 	.callbacks = {
 		.gso_segment	= inet_gso_segment,
-		.gro_receive	= ipip_gro_receive,
-		.gro_complete	= ipip_gro_complete,
+		.gro_receive	= inet_gro_receive,
+		.gro_complete	= inet_gro_complete,
 	},
 };
 
@@ -1809,8 +1783,6 @@ static int __init inet_init(void)
 	ipfrag_init();
 
 	dev_add_pack(&ip_packet_type);
-
-	ip_tunnel_core_init();
 
 	rc = 0;
 out:

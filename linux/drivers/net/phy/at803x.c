@@ -308,8 +308,6 @@ static struct phy_driver at803x_driver[] = {
 	.flags			= PHY_HAS_INTERRUPT,
 	.config_aneg		= genphy_config_aneg,
 	.read_status		= genphy_read_status,
-	.ack_interrupt		= at803x_ack_interrupt,
-	.config_intr		= at803x_config_intr,
 	.driver			= {
 		.owner = THIS_MODULE,
 	},
@@ -329,8 +327,6 @@ static struct phy_driver at803x_driver[] = {
 	.flags			= PHY_HAS_INTERRUPT,
 	.config_aneg		= genphy_config_aneg,
 	.read_status		= genphy_read_status,
-	.ack_interrupt		= at803x_ack_interrupt,
-	.config_intr		= at803x_config_intr,
 	.driver			= {
 		.owner = THIS_MODULE,
 	},

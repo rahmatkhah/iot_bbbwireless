@@ -56,7 +56,6 @@ struct rpc_clnt {
 	struct rpc_rtt *	cl_rtt;		/* RTO estimator data */
 	const struct rpc_timeout *cl_timeout;	/* Timeout strategy */
 
-	atomic_t		cl_swapper;	/* swapfile count */
 	int			cl_nodelen;	/* nodename length */
 	char 			cl_nodename[UNX_MAXNODENAME+1];
 	struct rpc_pipe_dir_head cl_pipedir_objects;
@@ -180,6 +179,5 @@ const char	*rpc_peeraddr2str(struct rpc_clnt *, enum rpc_display_format_t);
 int		rpc_localaddr(struct rpc_clnt *, struct sockaddr *, size_t);
 
 const char *rpc_proc_name(const struct rpc_task *task);
-void rpc_cleanup_clids(void);
 #endif /* __KERNEL__ */
 #endif /* _LINUX_SUNRPC_CLNT_H */

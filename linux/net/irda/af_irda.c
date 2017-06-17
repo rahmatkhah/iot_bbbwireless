@@ -1024,11 +1024,8 @@ static int irda_connect(struct socket *sock, struct sockaddr *uaddr,
 	}
 
 	/* Check if we have opened a local TSAP */
-	if (!self->tsap) {
-		err = irda_open_tsap(self, LSAP_ANY, addr->sir_name);
-		if (err)
-			goto out;
-	}
+	if (!self->tsap)
+		irda_open_tsap(self, LSAP_ANY, addr->sir_name);
 
 	/* Move to connecting socket, start sending Connect Requests */
 	sock->state = SS_CONNECTING;
@@ -1106,7 +1103,7 @@ static int irda_create(struct net *net, struct socket *sock, int protocol,
 	}
 
 	/* Allocate networking socket */
-	sk = sk_alloc(net, PF_IRDA, GFP_KERNEL, &irda_proto, kern);
+	sk = sk_alloc(net, PF_IRDA, GFP_KERNEL, &irda_proto);
 	if (sk == NULL)
 		return -ENOMEM;
 
@@ -2129,7 +2126,8 @@ static int irda_setsockopt(struct socket *sock, int level, int optname,
 		}
 
 		/* Unregister any old registration */
-		irlmp_unregister_service(self->skey);
+		if (self->skey)
+			irlmp_unregister_service(self->skey);
 
 		self->skey = irlmp_register_service((__u16) opt);
 		break;

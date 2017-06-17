@@ -27,16 +27,7 @@
 #include <net/act_api.h>
 #include <net/netlink.h>
 
-static void free_tcf(struct rcu_head *head)
-{
-	struct tcf_common *p = container_of(head, struct tcf_common, tcfc_rcu);
-
-	free_percpu(p->cpu_bstats);
-	free_percpu(p->cpu_qstats);
-	kfree(p);
-}
-
-static void tcf_hash_destroy(struct tc_action *a)
+void tcf_hash_destroy(struct tc_action *a)
 {
 	struct tcf_common *p = a->priv;
 	struct tcf_hashinfo *hinfo = a->ops->hinfo;
@@ -50,8 +41,9 @@ static void tcf_hash_destroy(struct tc_action *a)
 	 * gen_estimator est_timer() might access p->tcfc_lock
 	 * or bstats, wait a RCU grace period before freeing p
 	 */
-	call_rcu(&p->tcfc_rcu, free_tcf);
+	kfree_rcu(p, tcfc_rcu);
 }
+EXPORT_SYMBOL(tcf_hash_destroy);
 
 int __tcf_hash_release(struct tc_action *a, bool bind, bool strict)
 {
@@ -239,16 +231,15 @@ void tcf_hash_cleanup(struct tc_action *a, struct nlattr *est)
 	if (est)
 		gen_kill_estimator(&pc->tcfc_bstats,
 				   &pc->tcfc_rate_est);
-	call_rcu(&pc->tcfc_rcu, free_tcf);
+	kfree_rcu(pc, tcfc_rcu);
 }
 EXPORT_SYMBOL(tcf_hash_cleanup);
 
 int tcf_hash_create(u32 index, struct nlattr *est, struct tc_action *a,
-		    int size, int bind, bool cpustats)
+		    int size, int bind)
 {
 	struct tcf_hashinfo *hinfo = a->ops->hinfo;
 	struct tcf_common *p = kzalloc(size, GFP_KERNEL);
-	int err = -ENOMEM;
 
 	if (unlikely(!p))
 		return -ENOMEM;
@@ -256,32 +247,18 @@ int tcf_hash_create(u32 index, struct nlattr *est, struct tc_action *a,
 	if (bind)
 		p->tcfc_bindcnt = 1;
 
-	if (cpustats) {
-		p->cpu_bstats = netdev_alloc_pcpu_stats(struct gnet_stats_basic_cpu);
-		if (!p->cpu_bstats) {
-err1:
-			kfree(p);
-			return err;
-		}
-		p->cpu_qstats = alloc_percpu(struct gnet_stats_queue);
-		if (!p->cpu_qstats) {
-err2:
-			free_percpu(p->cpu_bstats);
-			goto err1;
-		}
-	}
 	spin_lock_init(&p->tcfc_lock);
 	INIT_HLIST_NODE(&p->tcfc_head);
 	p->tcfc_index = index ? index : tcf_hash_new_index(hinfo);
 	p->tcfc_tm.install = jiffies;
 	p->tcfc_tm.lastuse = jiffies;
 	if (est) {
-		err = gen_new_estimator(&p->tcfc_bstats, p->cpu_bstats,
-					&p->tcfc_rate_est,
-					&p->tcfc_lock, est);
+		int err = gen_new_estimator(&p->tcfc_bstats, NULL,
+					    &p->tcfc_rate_est,
+					    &p->tcfc_lock, est);
 		if (err) {
-			free_percpu(p->cpu_qstats);
-			goto err2;
+			kfree(p);
+			return err;
 		}
 	}
 
@@ -416,6 +393,11 @@ int tcf_action_exec(struct sk_buff *skb, const struct list_head *actions,
 	list_for_each_entry(a, actions, list) {
 repeat:
 		ret = a->ops->act(skb, a, res);
+		if (TC_MUNGED & skb->tc_verd) {
+			/* copied already, allow trampling */
+			skb->tc_verd = SET_TC_OK2MUNGE(skb->tc_verd);
+			skb->tc_verd = CLR_TC_MUNGED(skb->tc_verd);
+		}
 		if (ret == TC_ACT_REPEAT)
 			goto repeat;	/* we need a ttl - JHS */
 		if (ret != TC_ACT_PIPE)
@@ -639,10 +621,10 @@ int tcf_action_copy_stats(struct sk_buff *skb, struct tc_action *a,
 	if (err < 0)
 		goto errout;
 
-	if (gnet_stats_copy_basic(&d, p->cpu_bstats, &p->tcfc_bstats) < 0 ||
+	if (gnet_stats_copy_basic(&d, NULL, &p->tcfc_bstats) < 0 ||
 	    gnet_stats_copy_rate_est(&d, &p->tcfc_bstats,
 				     &p->tcfc_rate_est) < 0 ||
-	    gnet_stats_copy_queue(&d, p->cpu_qstats,
+	    gnet_stats_copy_queue(&d, NULL,
 				  &p->tcfc_qstats,
 				  p->tcfc_qstats.qlen) < 0)
 		goto errout;
@@ -820,8 +802,10 @@ static int tca_action_flush(struct net *net, struct nlattr *nla,
 		goto out_module_put;
 
 	err = a.ops->walk(skb, &dcb, RTM_DELACTION, &a);
-	if (err <= 0)
+	if (err < 0)
 		goto out_module_put;
+	if (err == 0)
+		goto noflush_out;
 
 	nla_nest_end(skb, nest);
 
@@ -838,6 +822,7 @@ static int tca_action_flush(struct net *net, struct nlattr *nla,
 out_module_put:
 	module_put(a.ops->owner);
 err_out:
+noflush_out:
 	kfree_skb(skb);
 	return err;
 }

@@ -719,21 +719,15 @@ static int check_input_term(struct mixer_build *state, int id,
 				term->name = d->iTerminal;
 			} else { /* UAC_VERSION_2 */
 				struct uac2_input_terminal_descriptor *d = p1;
-
-				/* call recursively to verify that the
-				 * referenced clock entity is valid */
-				err = check_input_term(state, d->bCSourceID, term);
-				if (err < 0)
-					return err;
-
-				/* save input term properties after recursion,
-				 * to ensure they are not overriden by the
-				 * recursion calls */
-				term->id = id;
 				term->type = le16_to_cpu(d->wTerminalType);
 				term->channels = d->bNrChannels;
 				term->chconfig = le32_to_cpu(d->bmChannelConfig);
 				term->name = d->iTerminal;
+
+				/* call recursively to get the clock selectors */
+				err = check_input_term(state, d->bCSourceID, term);
+				if (err < 0)
+					return err;
 			}
 			return 0;
 		case UAC_FEATURE_UNIT: {
@@ -931,10 +925,9 @@ static void volume_control_quirks(struct usb_mixer_elem_info *cval,
 	case USB_ID(0x046d, 0x0826): /* HD Webcam c525 */
 	case USB_ID(0x046d, 0x08ca): /* Logitech Quickcam Fusion */
 	case USB_ID(0x046d, 0x0991):
-	case USB_ID(0x046d, 0x09a2): /* QuickCam Communicate Deluxe/S7500 */
 	/* Most audio usb devices lie about volume resolution.
 	 * Most Logitech webcams have res = 384.
-	 * Probably there is some logitech magic behind this number --fishor
+	 * Proboly there is some logitech magic behind this number --fishor
 	 */
 		if (!strcmp(kctl->id.name, "Mic Capture Volume")) {
 			usb_audio_info(chip,

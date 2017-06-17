@@ -1390,17 +1390,17 @@ capemgr_add_slot(struct capemgr_info *info, const char *slot_name,
 		if (IS_ERR(slot->nvmem_cell)) {
 			ret = PTR_ERR(slot->nvmem_cell);
 			if (ret != -EPROBE_DEFER)
-				dev_info(dev, "Failed to get slot eeprom cell\n");
+				dev_err(dev, "Failed to get slot eeprom cell\n");
 			slot->nvmem_cell = NULL;
 			goto err_out;
 		}
 	} else {
-		dev_info(dev, "slot #%d: override\n", slotno);
+		dev_err(dev, "slot #%d: override\n", slotno);
 
 		/* fill in everything with defaults first */
 		ret = bone_slot_fill_override(slot, part_number, version);
 		if (ret != 0) {
-			dev_info(dev, "slot #%d: override failed\n", slotno);
+			dev_err(dev, "slot #%d: override failed\n", slotno);
 			goto err_out;
 		}
 	}
@@ -1409,28 +1409,27 @@ capemgr_add_slot(struct capemgr_info *info, const char *slot_name,
 	if (ret != 0) {
 
 		if (!slot->probe_failed) {
-			dev_info(dev, "slot #%d: scan failed\n",
+			dev_err(dev, "slot #%d: scan failed\n",
 					slotno);
 			goto err_out;
 		}
 
-		dev_info(dev, "slot #%d: No cape found\n", slotno);
+		dev_err(dev, "slot #%d: No cape found\n", slotno);
 		/* but all is fine */
 	} else {
 		if (uboot_capemgr_enabled == 0) {
-			dev_info(dev, "slot #%d: '%s'\n",
+			dev_err(dev, "slot #%d: '%s'\n",
 					slotno, slot->text_id);
 
 			ret = bone_cape_slot_sysfs_register(slot);
 			if (ret != 0) {
-				dev_info(dev, "slot #%d: sysfs register failed\n",
+				dev_err(dev, "slot #%d: sysfs register failed\n",
 						slotno);
 				goto err_out;
 			}
 		} else {
-			dev_info(dev, "slot #%d: auto loading handled by U-Boot\n", slotno);
+			dev_err(dev, "slot #%d: auto loading handled by U-Boot\n", slotno);
 		}
-
 	}
 
 	/* add to the slot list */

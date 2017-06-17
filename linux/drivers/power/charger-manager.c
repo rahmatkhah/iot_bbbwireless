@@ -619,7 +619,7 @@ static int cm_get_battery_temperature(struct charger_manager *cm,
 
 #ifdef CONFIG_THERMAL
 	if (cm->tzd_batt) {
-		ret = thermal_zone_get_temp(cm->tzd_batt, temp);
+		ret = thermal_zone_get_temp(cm->tzd_batt, (unsigned long *)temp);
 		if (!ret)
 			/* Calibrate temperature unit */
 			*temp /= 100;
@@ -1581,10 +1581,8 @@ static struct charger_desc *of_cm_parse_desc(struct device *dev)
 				cables = devm_kzalloc(dev, sizeof(*cables)
 						* chg_regs->num_cables,
 						GFP_KERNEL);
-				if (!cables) {
-					of_node_put(child);
+				if (!cables)
 					return ERR_PTR(-ENOMEM);
-				}
 
 				chg_regs->cables = cables;
 
@@ -1770,8 +1768,7 @@ static int charger_manager_probe(struct platform_device *pdev)
 
 	INIT_DELAYED_WORK(&cm->fullbatt_vchk_work, fullbatt_vchk);
 
-	cm->charger_psy = power_supply_register(&pdev->dev,
-						&cm->charger_psy_desc,
+	cm->charger_psy = power_supply_register(NULL, &cm->charger_psy_desc,
 						&psy_cfg);
 	if (IS_ERR(cm->charger_psy)) {
 		dev_err(&pdev->dev, "Cannot register charger-manager with name \"%s\"\n",

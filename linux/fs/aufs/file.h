@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2017 Junjiro R. Okajima
+ * Copyright (C) 2005-2016 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -63,7 +63,10 @@ struct au_finfo {
 	struct au_fidir		*fi_hdir;	/* for dir only */
 
 	struct hlist_node	fi_hlist;
-	struct file		*fi_file;	/* very ugly */
+	union {
+		struct file		*fi_file;	/* very ugly */
+		struct llist_node	fi_lnode;	/* delayed free */
+	};
 } ____cacheline_aligned_in_smp;
 
 /* ---------------------------------------------------------------------- */
@@ -120,10 +123,10 @@ void au_set_h_fptr(struct file *file, aufs_bindex_t bindex,
 
 void au_update_figen(struct file *file);
 struct au_fidir *au_fidir_alloc(struct super_block *sb);
-int au_fidir_realloc(struct au_finfo *finfo, int nbr, int may_shrink);
+int au_fidir_realloc(struct au_finfo *finfo, int nbr);
 
 void au_fi_init_once(void *_fi);
-void au_finfo_fin(struct file *file);
+void au_finfo_fin(struct file *file, int atonce);
 int au_finfo_init(struct file *file, struct au_fidir *fidir);
 
 /* ioctl.c */

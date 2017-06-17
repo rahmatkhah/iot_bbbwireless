@@ -41,8 +41,6 @@
 #include <linux/gpio.h>
 #include <linux/atomic.h>
 
-#include <asm/mach-ar7/ar7.h>
-
 MODULE_AUTHOR("Eugene Konev <ejka@imfi.kspu.ru>");
 MODULE_DESCRIPTION("TI AR7 ethernet driver (CPMAC)");
 MODULE_LICENSE("GPL");
@@ -549,8 +547,7 @@ fatal_error:
 
 static int cpmac_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-	int queue;
-	unsigned int len;
+	int queue, len;
 	struct cpmac_desc *desc;
 	struct cpmac_priv *priv = netdev_priv(dev);
 
@@ -560,7 +557,7 @@ static int cpmac_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (unlikely(skb_padto(skb, ETH_ZLEN)))
 		return NETDEV_TX_OK;
 
-	len = max_t(unsigned int, skb->len, ETH_ZLEN);
+	len = max(skb->len, ETH_ZLEN);
 	queue = skb_get_queue_mapping(skb);
 	netif_stop_subqueue(dev, queue);
 
@@ -900,6 +897,7 @@ static void cpmac_get_drvinfo(struct net_device *dev,
 	strlcpy(info->driver, "cpmac", sizeof(info->driver));
 	strlcpy(info->version, CPMAC_VERSION, sizeof(info->version));
 	snprintf(info->bus_info, sizeof(info->bus_info), "%s", "cpmac");
+	info->regdump_len = 0;
 }
 
 static const struct ethtool_ops cpmac_ethtool_ops = {
@@ -1237,7 +1235,7 @@ int cpmac_init(void)
 		goto fail_alloc;
 	}
 
-	/* FIXME: unhardcode gpio&reset bits */
+#warning FIXME: unhardcode gpio&reset bits
 	ar7_gpio_disable(26);
 	ar7_gpio_disable(27);
 	ar7_device_reset(AR7_RESET_BIT_CPMAC_LO);

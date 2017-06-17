@@ -52,7 +52,6 @@
 #include "stmmac_ptp.h"
 #include "stmmac.h"
 #include <linux/reset.h>
-#include <linux/of_mdio.h>
 
 #define STMMAC_ALIGN(x)	L1_CACHE_ALIGN(x)
 
@@ -185,7 +184,7 @@ static void stmmac_clk_csr_set(struct stmmac_priv *priv)
 			priv->clk_csr = STMMAC_CSR_100_150M;
 		else if ((clk_rate >= CSR_F_150M) && (clk_rate < CSR_F_250M))
 			priv->clk_csr = STMMAC_CSR_150_250M;
-		else if ((clk_rate >= CSR_F_250M) && (clk_rate <= CSR_F_300M))
+		else if ((clk_rate >= CSR_F_250M) && (clk_rate < CSR_F_300M))
 			priv->clk_csr = STMMAC_CSR_250_300M;
 	}
 }
@@ -424,7 +423,7 @@ static int stmmac_hwtstamp_ioctl(struct net_device *dev, struct ifreq *ifr)
 {
 	struct stmmac_priv *priv = netdev_priv(dev);
 	struct hwtstamp_config config;
-	struct timespec64 now;
+	struct timespec now;
 	u64 temp = 0;
 	u32 ptp_v2 = 0;
 	u32 tstamp_all = 0;
@@ -621,10 +620,8 @@ static int stmmac_hwtstamp_ioctl(struct net_device *dev, struct ifreq *ifr)
 					     priv->default_addend);
 
 		/* initialize system time */
-		ktime_get_real_ts64(&now);
-
-		/* lower 32 bits of tv_sec are safe until y2106 */
-		priv->hw->ptp->init_systime(priv->ioaddr, (u32)now.tv_sec,
+		getnstimeofday(&now);
+		priv->hw->ptp->init_systime(priv->ioaddr, now.tv_sec,
 					    now.tv_nsec);
 	}
 
@@ -819,25 +816,18 @@ static int stmmac_init_phy(struct net_device *dev)
 	priv->speed = 0;
 	priv->oldduplex = -1;
 
-	if (priv->plat->phy_node) {
-		phydev = of_phy_connect(dev, priv->plat->phy_node,
-					&stmmac_adjust_link, 0, interface);
-	} else {
-		if (priv->plat->phy_bus_name)
-			snprintf(bus_id, MII_BUS_ID_SIZE, "%s-%x",
-				 priv->plat->phy_bus_name, priv->plat->bus_id);
-		else
-			snprintf(bus_id, MII_BUS_ID_SIZE, "stmmac-%x",
-				 priv->plat->bus_id);
+	if (priv->plat->phy_bus_name)
+		snprintf(bus_id, MII_BUS_ID_SIZE, "%s-%x",
+			 priv->plat->phy_bus_name, priv->plat->bus_id);
+	else
+		snprintf(bus_id, MII_BUS_ID_SIZE, "stmmac-%x",
+			 priv->plat->bus_id);
 
-		snprintf(phy_id_fmt, MII_BUS_ID_SIZE + 3, PHY_ID_FMT, bus_id,
-			 priv->plat->phy_addr);
-		pr_debug("stmmac_init_phy:  trying to attach to %s\n",
-			 phy_id_fmt);
+	snprintf(phy_id_fmt, MII_BUS_ID_SIZE + 3, PHY_ID_FMT, bus_id,
+		 priv->plat->phy_addr);
+	pr_debug("stmmac_init_phy:  trying to attach to %s\n", phy_id_fmt);
 
-		phydev = phy_connect(dev, phy_id_fmt, &stmmac_adjust_link,
-				     interface);
-	}
+	phydev = phy_connect(dev, phy_id_fmt, &stmmac_adjust_link, interface);
 
 	if (IS_ERR_OR_NULL(phydev)) {
 		pr_err("%s: Could not attach to PHY\n", dev->name);
@@ -861,7 +851,7 @@ static int stmmac_init_phy(struct net_device *dev)
 	 * device as well.
 	 * Note: phydev->phy_id is the result of reading the UID PHY registers.
 	 */
-	if (!priv->plat->phy_node && phydev->phy_id == 0) {
+	if (phydev->phy_id == 0) {
 		phy_disconnect(phydev);
 		return -ENODEV;
 	}
@@ -988,11 +978,13 @@ static int stmmac_init_rx_buffers(struct stmmac_priv *priv, struct dma_desc *p,
 {
 	struct sk_buff *skb;
 
-	skb = __netdev_alloc_skb_ip_align(priv->dev, priv->dma_buf_sz, flags);
+	skb = __netdev_alloc_skb(priv->dev, priv->dma_buf_sz + NET_IP_ALIGN,
+				 flags);
 	if (!skb) {
 		pr_err("%s: Rx init fails; skb is NULL\n", __func__);
 		return -ENOMEM;
 	}
+	skb_reserve(skb, NET_IP_ALIGN);
 	priv->rx_skbuff[i] = skb;
 	priv->rx_skbuff_dma[i] = dma_map_single(priv->device, skb->data,
 						priv->dma_buf_sz,
@@ -1947,7 +1939,7 @@ static netdev_tx_t stmmac_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct stmmac_priv *priv = netdev_priv(dev);
 	unsigned int txsize = priv->dma_tx_size;
-	int entry;
+	unsigned int entry;
 	int i, csum_insertion = 0, is_jumbo = 0;
 	int nfrags = skb_shinfo(skb)->nr_frags;
 	struct dma_desc *desc, *first;
@@ -2232,12 +2224,6 @@ static int stmmac_rx(struct stmmac_priv *priv, int limit)
 
 			frame_len = priv->hw->desc->get_rx_frame_len(p, coe);
 
-			/*  check if frame_len fits the preallocated memory */
-			if (frame_len > priv->dma_buf_sz) {
-				priv->dev->stats.rx_length_errors++;
-				break;
-			}
-
 			/* ACS is set; GMAC core strips PAD/FCS for IEEE 802.3
 			 * Type frames (LLC/LLC-SNAP)
 			 */
@@ -2402,7 +2388,7 @@ static netdev_features_t stmmac_fix_features(struct net_device *dev,
 		features &= ~NETIF_F_RXCSUM;
 
 	if (!priv->plat->tx_coe)
-		features &= ~NETIF_F_CSUM_MASK;
+		features &= ~NETIF_F_ALL_CSUM;
 
 	/* Some GMAC devices have a bugged Jumbo frame support that
 	 * needs to have the Tx COE disabled for oversized frames
@@ -2410,7 +2396,7 @@ static netdev_features_t stmmac_fix_features(struct net_device *dev,
 	 * the TX csum insertionin the TDES and not use SF.
 	 */
 	if (priv->plat->bugged_jumbo && (dev->mtu > ETH_DATA_LEN))
-		features &= ~NETIF_F_CSUM_MASK;
+		features &= ~NETIF_F_ALL_CSUM;
 
 	return features;
 }
@@ -2817,15 +2803,16 @@ static int stmmac_hw_init(struct stmmac_priv *priv)
  * stmmac_dvr_probe
  * @device: device pointer
  * @plat_dat: platform data pointer
- * @res: stmmac resource pointer
+ * @addr: iobase memory address
  * Description: this is the main probe function used to
  * call the alloc_etherdev, allocate the priv structure.
  * Return:
- * returns 0 on success, otherwise errno.
+ * on success the new private structure is returned, otherwise the error
+ * pointer.
  */
-int stmmac_dvr_probe(struct device *device,
-		     struct plat_stmmacenet_data *plat_dat,
-		     struct stmmac_resources *res)
+struct stmmac_priv *stmmac_dvr_probe(struct device *device,
+				     struct plat_stmmacenet_data *plat_dat,
+				     void __iomem *addr)
 {
 	int ret = 0;
 	struct net_device *ndev = NULL;
@@ -2833,7 +2820,7 @@ int stmmac_dvr_probe(struct device *device,
 
 	ndev = alloc_etherdev(sizeof(struct stmmac_priv));
 	if (!ndev)
-		return -ENOMEM;
+		return ERR_PTR(-ENOMEM);
 
 	SET_NETDEV_DEV(ndev, device);
 
@@ -2844,17 +2831,8 @@ int stmmac_dvr_probe(struct device *device,
 	stmmac_set_ethtool_ops(ndev);
 	priv->pause = pause;
 	priv->plat = plat_dat;
-	priv->ioaddr = res->addr;
-	priv->dev->base_addr = (unsigned long)res->addr;
-
-	priv->dev->irq = res->irq;
-	priv->wol_irq = res->wol_irq;
-	priv->lpi_irq = res->lpi_irq;
-
-	if (res->mac)
-		memcpy(priv->dev->dev_addr, res->mac, ETH_ALEN);
-
-	dev_set_drvdata(device, priv->dev);
+	priv->ioaddr = addr;
+	priv->dev->base_addr = (unsigned long)addr;
 
 	/* Verify driver arguments */
 	stmmac_verify_args();
@@ -2939,6 +2917,12 @@ int stmmac_dvr_probe(struct device *device,
 	spin_lock_init(&priv->lock);
 	spin_lock_init(&priv->tx_lock);
 
+	ret = register_netdev(ndev);
+	if (ret) {
+		pr_err("%s: ERROR %i registering the device\n", __func__, ret);
+		goto error_netdev_register;
+	}
+
 	/* If a specific clk_csr value is passed from the platform
 	 * this means that the CSR Clock Range selection cannot be
 	 * changed at run-time and it is fixed. Viceversa the driver'll try to
@@ -2963,21 +2947,11 @@ int stmmac_dvr_probe(struct device *device,
 		}
 	}
 
-	ret = register_netdev(ndev);
-	if (ret) {
-		netdev_err(priv->dev, "%s: ERROR %i registering the device\n",
-			   __func__, ret);
-		goto error_netdev_register;
-	}
+	return priv;
 
-	return ret;
-
-error_netdev_register:
-	if (priv->pcs != STMMAC_PCS_RGMII &&
-	    priv->pcs != STMMAC_PCS_TBI &&
-	    priv->pcs != STMMAC_PCS_RTBI)
-		stmmac_mdio_unregister(ndev);
 error_mdio_register:
+	unregister_netdev(ndev);
+error_netdev_register:
 	netif_napi_del(&priv->napi);
 error_hw_init:
 	clk_disable_unprepare(priv->pclk);
@@ -2986,7 +2960,7 @@ error_pclk_get:
 error_clk_get:
 	free_netdev(ndev);
 
-	return ret;
+	return ERR_PTR(ret);
 }
 EXPORT_SYMBOL_GPL(stmmac_dvr_probe);
 
@@ -3050,6 +3024,8 @@ int stmmac_suspend(struct net_device *ndev)
 	priv->hw->dma->stop_tx(priv->ioaddr);
 	priv->hw->dma->stop_rx(priv->ioaddr);
 
+	stmmac_clear_descriptors(priv);
+
 	/* Enable Power down mode by programming the PMT regs */
 	if (device_may_wakeup(priv->device)) {
 		priv->hw->mac->pmt(priv->hw, priv->wolopts);
@@ -3107,15 +3083,9 @@ int stmmac_resume(struct net_device *ndev)
 
 	netif_device_attach(ndev);
 
-	priv->cur_rx = 0;
-	priv->dirty_rx = 0;
-	priv->dirty_tx = 0;
-	priv->cur_tx = 0;
-	stmmac_clear_descriptors(priv);
-
+	init_dma_desc_rings(ndev, GFP_ATOMIC);
 	stmmac_hw_setup(ndev, false);
 	stmmac_init_tx_coalesce(priv);
-	stmmac_set_rx_mode(ndev);
 
 	napi_enable(&priv->napi);
 

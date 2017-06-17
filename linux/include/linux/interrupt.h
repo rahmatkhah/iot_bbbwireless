@@ -208,7 +208,6 @@ extern void resume_device_irqs(void);
  * @irq:		Interrupt to which notification applies
  * @kref:		Reference count, for internal use
  * @work:		Work item, for internal use
- * @list:		List item for deferred callbacks
  * @notify:		Function to be called on change.  This will be
  *			called in process context.
  * @release:		Function to be called on release.  This will be
@@ -423,8 +422,7 @@ enum
 	BLOCK_IOPOLL_SOFTIRQ,
 	TASKLET_SOFTIRQ,
 	SCHED_SOFTIRQ,
-	HRTIMER_SOFTIRQ, /* Unused, but kept as tools rely on the
-			    numbering. Sigh! */
+	HRTIMER_SOFTIRQ,
 	RCU_SOFTIRQ,    /* Preferable RCU should always be the last softirq */
 
 	NR_SOFTIRQS
@@ -621,10 +619,10 @@ tasklet_hrtimer_init(struct tasklet_hrtimer *ttimer,
 		     clockid_t which_clock, enum hrtimer_mode mode);
 
 static inline
-void tasklet_hrtimer_start(struct tasklet_hrtimer *ttimer, ktime_t time,
-			   const enum hrtimer_mode mode)
+int tasklet_hrtimer_start(struct tasklet_hrtimer *ttimer, ktime_t time,
+			  const enum hrtimer_mode mode)
 {
-	hrtimer_start(&ttimer->timer, time, mode);
+	return hrtimer_start(&ttimer->timer, time, mode);
 }
 
 static inline

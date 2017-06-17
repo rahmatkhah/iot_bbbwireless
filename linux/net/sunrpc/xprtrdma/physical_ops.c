@@ -23,21 +23,6 @@ static int
 physical_op_open(struct rpcrdma_ia *ia, struct rpcrdma_ep *ep,
 		 struct rpcrdma_create_data_internal *cdata)
 {
-	struct ib_mr *mr;
-
-	/* Obtain an rkey to use for RPC data payloads.
-	 */
-	mr = ib_get_dma_mr(ia->ri_pd,
-			   IB_ACCESS_LOCAL_WRITE |
-			   IB_ACCESS_REMOTE_WRITE |
-			   IB_ACCESS_REMOTE_READ);
-	if (IS_ERR(mr)) {
-		pr_err("%s: ib_get_dma_mr for failed with %lX\n",
-		       __func__, PTR_ERR(mr));
-		return -ENOMEM;
-	}
-
-	ia->ri_dma_mr = mr;
 	return 0;
 }
 
@@ -65,8 +50,9 @@ physical_op_map(struct rpcrdma_xprt *r_xprt, struct rpcrdma_mr_seg *seg,
 {
 	struct rpcrdma_ia *ia = &r_xprt->rx_ia;
 
-	rpcrdma_map_one(ia->ri_device, seg, rpcrdma_data_dir(writing));
-	seg->mr_rkey = ia->ri_dma_mr->rkey;
+	rpcrdma_map_one(ia->ri_id->device, seg,
+			rpcrdma_data_dir(writing));
+	seg->mr_rkey = ia->ri_bind_mem->rkey;
 	seg->mr_base = seg->mr_dma;
 	seg->mr_nsegs = 1;
 	return 1;
@@ -79,8 +65,16 @@ physical_op_unmap(struct rpcrdma_xprt *r_xprt, struct rpcrdma_mr_seg *seg)
 {
 	struct rpcrdma_ia *ia = &r_xprt->rx_ia;
 
-	rpcrdma_unmap_one(ia->ri_device, seg);
+	read_lock(&ia->ri_qplock);
+	rpcrdma_unmap_one(ia->ri_id->device, seg);
+	read_unlock(&ia->ri_qplock);
+
 	return 1;
+}
+
+static void
+physical_op_reset(struct rpcrdma_xprt *r_xprt)
+{
 }
 
 static void
@@ -94,6 +88,7 @@ const struct rpcrdma_memreg_ops rpcrdma_physical_memreg_ops = {
 	.ro_open			= physical_op_open,
 	.ro_maxpages			= physical_op_maxpages,
 	.ro_init			= physical_op_init,
+	.ro_reset			= physical_op_reset,
 	.ro_destroy			= physical_op_destroy,
 	.ro_displayname			= "physical",
 };

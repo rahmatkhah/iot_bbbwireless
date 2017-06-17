@@ -168,8 +168,7 @@ struct omap_nand_info {
 	unsigned long			phys_base;
 	struct completion		comp;
 	struct dma_chan			*dma;
-	int				gpmc_irq_fifo;
-	int				gpmc_irq_count;
+	int				gpmc_irq;
 	enum {
 		OMAP_NAND_IO_READ = 0,	/* read */
 		OMAP_NAND_IO_WRITE,	/* write */
@@ -185,6 +184,7 @@ struct omap_nand_info {
 	struct nand_ecclayout		oobinfo;
 	/* fields specific for BCHx_HW ECC scheme */
 	struct device			*elm_dev;
+	struct device_node		*of_node;
 	/* NAND ready gpio */
 	struct gpio_desc		*ready_gpiod;
 };
@@ -479,7 +479,7 @@ static inline int omap_nand_dma_transfer(struct mtd_info *mtd, void *addr,
 	int ret;
 	u32 val;
 
-	if (!virt_addr_valid(addr))
+	if (addr >= high_memory)
 		goto out_copy;
 
 	sg_init_one(&sg, addr, len);
@@ -580,12 +580,17 @@ static irqreturn_t omap_nand_irq(int this_irq, void *dev)
 {
 	struct omap_nand_info *info = (struct omap_nand_info *) dev;
 	u32 bytes;
+	u32 irqstatus;
+
+	irqstatus = info->ops->nand_irq_status();
+	if (!irqstatus)
+		return IRQ_NONE;
 
 	bytes = readl(info->reg.gpmc_prefetch_status);
 	bytes = PREFETCH_STATUS_FIFO_CNT(bytes);
 	bytes = bytes  & 0xFFFC; /* io in multiple of 4 bytes */
 	if (info->iomode == OMAP_NAND_IO_WRITE) { /* checks for write io */
-		if (this_irq == info->gpmc_irq_count)
+		if (irqstatus & GPMC_IRQENABLE_TERMCOUNT)
 			goto done;
 
 		if (info->buf_len && (info->buf_len < bytes))
@@ -602,17 +607,25 @@ static irqreturn_t omap_nand_irq(int this_irq, void *dev)
 						(u32 *)info->buf, bytes >> 2);
 		info->buf = info->buf + bytes;
 
-		if (this_irq == info->gpmc_irq_count)
+		if (irqstatus & GPMC_IRQENABLE_TERMCOUNT)
 			goto done;
 	}
+
+	/* Clear FIFOEVENT STATUS */
+	info->ops->nand_irq_clear(GPMC_NAND_IRQ_FIFOEVENT);
 
 	return IRQ_HANDLED;
 
 done:
 	complete(&info->comp);
 
-	disable_irq_nosync(info->gpmc_irq_fifo);
-	disable_irq_nosync(info->gpmc_irq_count);
+	/* Clear FIFOEVENT and TERMCOUNT STATUS */
+	info->ops->nand_irq_clear(GPMC_NAND_IRQ_FIFOEVENT);
+	info->ops->nand_irq_clear(GPMC_NAND_IRQ_TERMCOUNT);
+
+	/* Disable Interrupt generation */
+	info->ops->nand_irq_disable(GPMC_NAND_IRQ_FIFOEVENT);
+	info->ops->nand_irq_disable(GPMC_NAND_IRQ_TERMCOUNT);
 
 	return IRQ_HANDLED;
 }
@@ -647,8 +660,9 @@ static void omap_read_buf_irq_pref(struct mtd_info *mtd, u_char *buf, int len)
 
 	info->buf_len = len;
 
-	enable_irq(info->gpmc_irq_count);
-	enable_irq(info->gpmc_irq_fifo);
+	/* Enable Interrupt generation */
+	info->ops->nand_irq_enable(GPMC_NAND_IRQ_TERMCOUNT);
+	info->ops->nand_irq_enable(GPMC_NAND_IRQ_FIFOEVENT);
 
 	/* waiting for read to complete */
 	wait_for_completion(&info->comp);
@@ -697,8 +711,9 @@ static void omap_write_buf_irq_pref(struct mtd_info *mtd,
 
 	info->buf_len = len;
 
-	enable_irq(info->gpmc_irq_count);
-	enable_irq(info->gpmc_irq_fifo);
+	/* Enable Interrupt generation */
+	info->ops->nand_irq_enable(GPMC_NAND_IRQ_TERMCOUNT);
+	info->ops->nand_irq_enable(GPMC_NAND_IRQ_FIFOEVENT);
 
 	/* waiting for write to complete */
 	wait_for_completion(&info->comp);
@@ -1497,12 +1512,11 @@ static int omap_elm_correct_data(struct mtd_info *mtd, u_char *data,
  * @chip:		nand chip info structure
  * @buf:		data buffer
  * @oob_required:	must write chip->oob_poi to OOB
- * @page:		page
  *
  * Custom write page method evolved to support multi sector writing in one shot
  */
 static int omap_write_page_bch(struct mtd_info *mtd, struct nand_chip *chip,
-			       const uint8_t *buf, int oob_required, int page)
+				  const uint8_t *buf, int oob_required)
 {
 	int i;
 	uint8_t *ecc_calc = chip->buffers->ecccalc;
@@ -1756,6 +1770,7 @@ static int omap_nand_probe(struct platform_device *pdev)
 
 		info->gpmc_cs = pdata->cs;
 		info->reg = pdata->reg;
+		info->of_node = pdata->of_node;
 		info->ecc_opt = pdata->ecc_opt;
 		if (pdata->dev_ready)
 			dev_info(&pdev->dev, "pdata->dev_ready is deprecated\n");
@@ -1775,7 +1790,8 @@ static int omap_nand_probe(struct platform_device *pdev)
 
 	mtd			= &info->mtd;
 	mtd->priv		= &info->nand;
-	mtd->dev.parent		= &pdev->dev;
+	mtd->name		= dev_name(&pdev->dev);
+	mtd->owner		= THIS_MODULE;
 	nand_chip		= &info->nand;
 	nand_chip->ecc.priv	= NULL;
 
@@ -1791,7 +1807,7 @@ static int omap_nand_probe(struct platform_device *pdev)
 	nand_chip->IO_ADDR_W = nand_chip->IO_ADDR_R;
 	nand_chip->cmd_ctrl  = omap_hwcontrol;
 
-	info->ready_gpiod = devm_gpiod_get_optional(&pdev->dev, "rb",
+	info->ready_gpiod = devm_gpiod_get_optional(&pdev->dev, "ready",
 						    GPIOD_IN);
 	if (IS_ERR(info->ready_gpiod)) {
 		dev_err(dev, "failed to get ready gpio\n");
@@ -1842,11 +1858,12 @@ static int omap_nand_probe(struct platform_device *pdev)
 		dma_cap_zero(mask);
 		dma_cap_set(DMA_SLAVE, mask);
 		sig = OMAP24XX_DMA_GPMC;
-		info->dma = dma_request_chan(pdev->dev.parent, "rxtx");
+		info->dma = dma_request_slave_channel_compat(mask,
+			omap_dma_filter_fn, &sig, pdev->dev.parent, "rxtx");
 
-		if (IS_ERR(info->dma)) {
+		if (!info->dma) {
 			dev_err(&pdev->dev, "DMA engine request failed\n");
-			err = PTR_ERR(info->dma);
+			err = -ENXIO;
 			goto return_error;
 		} else {
 			struct dma_slave_config cfg;
@@ -1870,35 +1887,18 @@ static int omap_nand_probe(struct platform_device *pdev)
 		break;
 
 	case NAND_OMAP_PREFETCH_IRQ:
-		info->gpmc_irq_fifo = platform_get_irq(pdev, 0);
-		if (info->gpmc_irq_fifo <= 0) {
-			dev_err(&pdev->dev, "error getting fifo irq\n");
+		info->gpmc_irq = platform_get_irq(pdev, 0);
+		if (info->gpmc_irq <= 0) {
+			dev_err(&pdev->dev, "error getting GPMC irq\n");
 			err = -ENODEV;
 			goto return_error;
 		}
-		err = devm_request_irq(&pdev->dev, info->gpmc_irq_fifo,
-					omap_nand_irq, IRQF_SHARED,
-					"gpmc-nand-fifo", info);
+		err = devm_request_irq(&pdev->dev, info->gpmc_irq,
+				       omap_nand_irq, IRQF_SHARED,
+				       DRIVER_NAME, info);
 		if (err) {
 			dev_err(&pdev->dev, "requesting irq(%d) error:%d",
-						info->gpmc_irq_fifo, err);
-			info->gpmc_irq_fifo = 0;
-			goto return_error;
-		}
-
-		info->gpmc_irq_count = platform_get_irq(pdev, 1);
-		if (info->gpmc_irq_count <= 0) {
-			dev_err(&pdev->dev, "error getting count irq\n");
-			err = -ENODEV;
-			goto return_error;
-		}
-		err = devm_request_irq(&pdev->dev, info->gpmc_irq_count,
-					omap_nand_irq, IRQF_SHARED,
-					"gpmc-nand-count", info);
-		if (err) {
-			dev_err(&pdev->dev, "requesting irq(%d) error:%d",
-						info->gpmc_irq_count, err);
-			info->gpmc_irq_count = 0;
+						info->gpmc_irq, err);
 			goto return_error;
 		}
 
@@ -2149,7 +2149,7 @@ scan_tail:
 	return 0;
 
 return_error:
-	if (!IS_ERR_OR_NULL(info->dma))
+	if (info->dma)
 		dma_release_channel(info->dma);
 	if (nand_chip->ecc.priv) {
 		nand_bch_free(nand_chip->ecc.priv);

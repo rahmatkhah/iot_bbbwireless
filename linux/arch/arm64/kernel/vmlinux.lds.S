@@ -5,8 +5,6 @@
  */
 
 #include <asm-generic/vmlinux.lds.h>
-#include <asm/cache.h>
-#include <asm/kernel-pgtable.h>
 #include <asm/thread_info.h>
 #include <asm/memory.h>
 #include <asm/page.h>
@@ -39,12 +37,6 @@ jiffies = jiffies_64;
 	VMLINUX_SYMBOL(__hyp_text_start) = .;		\
 	*(.hyp.text)					\
 	VMLINUX_SYMBOL(__hyp_text_end) = .;
-
-#define IDMAP_TEXT					\
-	. = ALIGN(SZ_4K);				\
-	VMLINUX_SYMBOL(__idmap_text_start) = .;		\
-	*(.idmap.text)					\
-	VMLINUX_SYMBOL(__idmap_text_end) = .;
 
 /*
  * The size of the PE/COFF section that covers the kernel image, which
@@ -106,7 +98,6 @@ SECTIONS
 			SCHED_TEXT
 			LOCK_TEXT
 			HYPERVISOR_TEXT
-			IDMAP_TEXT
 			*(.fixup)
 			*(.gnu.warning)
 		. = ALIGN(16);
@@ -141,7 +132,7 @@ SECTIONS
 		ARM_EXIT_KEEP(EXIT_DATA)
 	}
 
-	PERCPU_SECTION(L1_CACHE_BYTES)
+	PERCPU_SECTION(64)
 
 	. = ALIGN(PAGE_SIZE);
 	__init_end = .;
@@ -159,7 +150,7 @@ SECTIONS
 	. = ALIGN(PAGE_SIZE);
 	_data = .;
 	_sdata = .;
-	RW_DATA_SECTION(L1_CACHE_BYTES, PAGE_SIZE, THREAD_SIZE)
+	RW_DATA_SECTION(64, PAGE_SIZE, THREAD_SIZE)
 	PECOFF_EDATA_PADDING
 	_edata = .;
 
@@ -179,13 +170,11 @@ SECTIONS
 }
 
 /*
- * The HYP init code and ID map text can't be longer than a page each,
+ * The HYP init code can't be more than a page long,
  * and should not cross a page boundary.
  */
 ASSERT(__hyp_idmap_text_end - (__hyp_idmap_text_start & ~(SZ_4K - 1)) <= SZ_4K,
 	"HYP init code too big or misaligned")
-ASSERT(__idmap_text_end - (__idmap_text_start & ~(SZ_4K - 1)) <= SZ_4K,
-	"ID map text too big or misaligned")
 
 /*
  * If padding is applied before .head.text, virt<->phys conversions will fail.

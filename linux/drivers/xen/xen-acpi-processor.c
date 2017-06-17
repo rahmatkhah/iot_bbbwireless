@@ -27,10 +27,10 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/types.h>
-#include <linux/syscore_ops.h>
 #include <linux/acpi.h>
 #include <acpi/processor.h>
 #include <xen/xen.h>
+#include <xen/xen-ops.h>
 #include <xen/interface/platform.h>
 #include <asm/xen/hypercall.h>
 
@@ -466,33 +466,15 @@ static int xen_upload_processor_pm_data(void)
 	return rc;
 }
 
-static void xen_acpi_processor_resume_worker(struct work_struct *dummy)
+static int xen_acpi_processor_resume(struct notifier_block *nb,
+				     unsigned long action, void *data)
 {
-	int rc;
-
 	bitmap_zero(acpi_ids_done, nr_acpi_bits);
-
-	rc = xen_upload_processor_pm_data();
-	if (rc != 0)
-		pr_info("ACPI data upload failed, error = %d\n", rc);
+	return xen_upload_processor_pm_data();
 }
 
-static void xen_acpi_processor_resume(void)
-{
-	static DECLARE_WORK(wq, xen_acpi_processor_resume_worker);
-
-	/*
-	 * xen_upload_processor_pm_data() calls non-atomic code.
-	 * However, the context for xen_acpi_processor_resume is syscore
-	 * with only the boot CPU online and in an atomic context.
-	 *
-	 * So defer the upload for some point safer.
-	 */
-	schedule_work(&wq);
-}
-
-static struct syscore_ops xap_syscore_ops = {
-	.resume	= xen_acpi_processor_resume,
+struct notifier_block xen_acpi_processor_resume_nb = {
+	.notifier_call = xen_acpi_processor_resume,
 };
 
 static int __init xen_acpi_processor_init(void)
@@ -545,13 +527,15 @@ static int __init xen_acpi_processor_init(void)
 	if (rc)
 		goto err_unregister;
 
-	register_syscore_ops(&xap_syscore_ops);
+	xen_resume_notifier_register(&xen_acpi_processor_resume_nb);
 
 	return 0;
 err_unregister:
-	for_each_possible_cpu(i)
-		acpi_processor_unregister_performance(i);
-
+	for_each_possible_cpu(i) {
+		struct acpi_processor_performance *perf;
+		perf = per_cpu_ptr(acpi_perf_data, i);
+		acpi_processor_unregister_performance(perf, i);
+	}
 err_out:
 	/* Freeing a NULL pointer is OK: alloc_percpu zeroes. */
 	free_acpi_perf_data();
@@ -562,13 +546,15 @@ static void __exit xen_acpi_processor_exit(void)
 {
 	int i;
 
-	unregister_syscore_ops(&xap_syscore_ops);
+	xen_resume_notifier_unregister(&xen_acpi_processor_resume_nb);
 	kfree(acpi_ids_done);
 	kfree(acpi_id_present);
 	kfree(acpi_id_cst_present);
-	for_each_possible_cpu(i)
-		acpi_processor_unregister_performance(i);
-
+	for_each_possible_cpu(i) {
+		struct acpi_processor_performance *perf;
+		perf = per_cpu_ptr(acpi_perf_data, i);
+		acpi_processor_unregister_performance(perf, i);
+	}
 	free_acpi_perf_data();
 }
 

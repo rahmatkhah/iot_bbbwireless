@@ -214,10 +214,12 @@ static int __f2fs_set_acl(struct inode *inode, int type,
 	case ACL_TYPE_ACCESS:
 		name_index = F2FS_XATTR_INDEX_POSIX_ACL_ACCESS;
 		if (acl) {
-			error = posix_acl_update_mode(inode, &inode->i_mode, &acl);
-			if (error)
+			error = posix_acl_equiv_mode(acl, &inode->i_mode);
+			if (error < 0)
 				return error;
 			set_acl_inode(fi, inode->i_mode);
+			if (error == 0)
+				acl = NULL;
 		}
 		break;
 
@@ -332,45 +334,51 @@ static int f2fs_acl_create(struct inode *dir, umode_t *mode,
 		struct page *dpage)
 {
 	struct posix_acl *p;
-	struct posix_acl *clone;
 	int ret;
 
-	*acl = NULL;
-	*default_acl = NULL;
-
 	if (S_ISLNK(*mode) || !IS_POSIXACL(dir))
-		return 0;
+		goto no_acl;
 
 	p = __f2fs_get_acl(dir, ACL_TYPE_DEFAULT, dpage);
-	if (!p || p == ERR_PTR(-EOPNOTSUPP)) {
-		*mode &= ~current_umask();
-		return 0;
-	}
-	if (IS_ERR(p))
+	if (IS_ERR(p)) {
+		if (p == ERR_PTR(-EOPNOTSUPP))
+			goto apply_umask;
 		return PTR_ERR(p);
+	}
 
-	clone = f2fs_acl_clone(p, GFP_NOFS);
-	if (!clone)
+	if (!p)
+		goto apply_umask;
+
+	*acl = f2fs_acl_clone(p, GFP_NOFS);
+	if (!*acl)
 		goto no_mem;
 
-	ret = f2fs_acl_create_masq(clone, mode);
+	ret = f2fs_acl_create_masq(*acl, mode);
 	if (ret < 0)
 		goto no_mem_clone;
 
-	if (ret == 0)
-		posix_acl_release(clone);
-	else
-		*acl = clone;
+	if (ret == 0) {
+		posix_acl_release(*acl);
+		*acl = NULL;
+	}
 
-	if (!S_ISDIR(*mode))
+	if (!S_ISDIR(*mode)) {
 		posix_acl_release(p);
-	else
+		*default_acl = NULL;
+	} else {
 		*default_acl = p;
+	}
+	return 0;
 
+apply_umask:
+	*mode &= ~current_umask();
+no_acl:
+	*default_acl = NULL;
+	*acl = NULL;
 	return 0;
 
 no_mem_clone:
-	posix_acl_release(clone);
+	posix_acl_release(*acl);
 no_mem:
 	posix_acl_release(p);
 	return -ENOMEM;

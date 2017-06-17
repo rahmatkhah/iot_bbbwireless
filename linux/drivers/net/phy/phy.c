@@ -37,7 +37,6 @@
 #include <linux/atomic.h>
 
 #include <asm/irq.h>
-#include <linux/mscc.h>
 
 static const char *phy_speed_to_str(int speed)
 {
@@ -58,31 +57,6 @@ static const char *phy_speed_to_str(int speed)
 		return "Unsupported (update phy.c)";
 	}
 }
-
-#define PHY_STATE_STR(_state)			\
-	case PHY_##_state:			\
-		return __stringify(_state);	\
-
-static const char *phy_state_to_str(enum phy_state st)
-{
-	switch (st) {
-	PHY_STATE_STR(DOWN)
-	PHY_STATE_STR(STARTING)
-	PHY_STATE_STR(READY)
-	PHY_STATE_STR(PENDING)
-	PHY_STATE_STR(UP)
-	PHY_STATE_STR(AN)
-	PHY_STATE_STR(RUNNING)
-	PHY_STATE_STR(NOLINK)
-	PHY_STATE_STR(FORCING)
-	PHY_STATE_STR(CHANGELINK)
-	PHY_STATE_STR(HALTED)
-	PHY_STATE_STR(RESUMING)
-	}
-
-	return NULL;
-}
-
 
 /**
  * phy_print_status - Convenience function to print out the current phy status
@@ -354,8 +328,6 @@ int phy_ethtool_sset(struct phy_device *phydev, struct ethtool_cmd *cmd)
 
 	phydev->duplex = cmd->duplex;
 
-	phydev->mdix = cmd->eth_tp_mdix_ctrl;
-
 	/* Restart the PHY */
 	phy_start_aneg(phydev);
 
@@ -380,7 +352,6 @@ int phy_ethtool_gset(struct phy_device *phydev, struct ethtool_cmd *cmd)
 	cmd->transceiver = phy_is_internal(phydev) ?
 		XCVR_INTERNAL : XCVR_EXTERNAL;
 	cmd->autoneg = phydev->autoneg;
-	cmd->eth_tp_mdix_ctrl = phydev->mdix;
 
 	return 0;
 }
@@ -449,8 +420,7 @@ int phy_mii_ioctl(struct phy_device *phydev, struct ifreq *ifr, int cmd)
 		mdiobus_write(phydev->bus, mii_data->phy_id,
 			      mii_data->reg_num, val);
 
-		if (mii_data->phy_id == phydev->addr &&
-		    mii_data->reg_num == MII_BMCR &&
+		if (mii_data->reg_num == MII_BMCR &&
 		    val & BMCR_RESET)
 			return phy_init_hw(phydev);
 
@@ -539,7 +509,7 @@ void phy_stop_machine(struct phy_device *phydev)
 	cancel_delayed_work_sync(&phydev->state_queue);
 
 	mutex_lock(&phydev->lock);
-	if (phydev->state > PHY_UP && phydev->state != PHY_HALTED)
+	if (phydev->state > PHY_UP)
 		phydev->state = PHY_UP;
 	mutex_unlock(&phydev->lock);
 }
@@ -641,10 +611,8 @@ phy_err:
 int phy_start_interrupts(struct phy_device *phydev)
 {
 	atomic_set(&phydev->irq_disable, 0);
-	if (request_irq(phydev->irq, phy_interrupt,
-				IRQF_SHARED,
-				"phy_interrupt",
-				phydev) < 0) {
+	if (request_irq(phydev->irq, phy_interrupt, 0, "phy_interrupt",
+			phydev) < 0) {
 		pr_warn("%s: Can't get IRQ %d (PHY)\n",
 			phydev->bus->name, phydev->irq);
 		phydev->irq = PHY_POLL;
@@ -816,13 +784,9 @@ void phy_state_machine(struct work_struct *work)
 	struct phy_device *phydev =
 			container_of(dwork, struct phy_device, state_queue);
 	bool needs_aneg = false, do_suspend = false;
-	enum phy_state old_state;
 	int err = 0;
-	int old_link;
 
 	mutex_lock(&phydev->lock);
-
-	old_state = phydev->state;
 
 	if (phydev->drv->link_change_notify)
 		phydev->drv->link_change_notify(phydev);
@@ -867,9 +831,6 @@ void phy_state_machine(struct work_struct *work)
 			needs_aneg = true;
 		break;
 	case PHY_NOLINK:
-		if (phy_interrupt_is_valid(phydev))
-			break;
-
 		err = phy_read_status(phydev);
 		if (err)
 			break;
@@ -907,18 +868,11 @@ void phy_state_machine(struct work_struct *work)
 		phydev->adjust_link(phydev->attached_dev);
 		break;
 	case PHY_RUNNING:
-		/* Only register a CHANGE if we are polling or ignoring
-		 * interrupts and link changed since latest checking.
+		/* Only register a CHANGE if we are
+		 * polling or ignoring interrupts
 		 */
-		if (!phy_interrupt_is_valid(phydev)) {
-			old_link = phydev->link;
-			err = phy_read_status(phydev);
-			if (err)
-				break;
-
-			if (old_link != phydev->link)
-				phydev->state = PHY_CHANGELINK;
-		}
+		if (!phy_interrupt_is_valid(phydev))
+			phydev->state = PHY_CHANGELINK;
 		break;
 	case PHY_CHANGELINK:
 		err = phy_read_status(phydev);
@@ -998,9 +952,6 @@ void phy_state_machine(struct work_struct *work)
 	if (err < 0)
 		phy_error(phydev);
 
-	dev_dbg(&phydev->dev, "PHY state change %s -> %s\n",
-		phy_state_to_str(old_state), phy_state_to_str(phydev->state));
-
 	queue_delayed_work(system_power_efficient_wq, &phydev->state_queue,
 			   PHY_STATE_TIME * HZ);
 }
@@ -1047,15 +998,11 @@ int phy_read_mmd_indirect(struct phy_device *phydev, int prtad,
 	struct phy_driver *phydrv = phydev->drv;
 	int value = -1;
 
-	if (!phydrv->read_mmd_indirect) {
-		struct mii_bus *bus = phydev->bus;
-
-		mutex_lock(&bus->mdio_lock);
-		mmd_phy_indirect(bus, prtad, devad, addr);
+	if (phydrv->read_mmd_indirect == NULL) {
+		mmd_phy_indirect(phydev->bus, prtad, devad, addr);
 
 		/* Read the content of the MMD's selected register */
-		value = bus->read(bus, addr, MII_MMD_DATA);
-		mutex_unlock(&bus->mdio_lock);
+		value = phydev->bus->read(phydev->bus, addr, MII_MMD_DATA);
 	} else {
 		value = phydrv->read_mmd_indirect(phydev, prtad, devad, addr);
 	}
@@ -1084,15 +1031,11 @@ void phy_write_mmd_indirect(struct phy_device *phydev, int prtad,
 {
 	struct phy_driver *phydrv = phydev->drv;
 
-	if (!phydrv->write_mmd_indirect) {
-		struct mii_bus *bus = phydev->bus;
-
-		mutex_lock(&bus->mdio_lock);
-		mmd_phy_indirect(bus, prtad, devad, addr);
+	if (phydrv->write_mmd_indirect == NULL) {
+		mmd_phy_indirect(phydev->bus, prtad, devad, addr);
 
 		/* Write the data into MMD's selected register */
-		bus->write(bus, addr, MII_MMD_DATA, data);
-		mutex_unlock(&bus->mdio_lock);
+		phydev->bus->write(phydev->bus, addr, MII_MMD_DATA, data);
 	} else {
 		phydrv->write_mmd_indirect(phydev, prtad, devad, addr, data);
 	}
@@ -1119,7 +1062,8 @@ int phy_init_eee(struct phy_device *phydev, bool clk_stop_enable)
 	if ((phydev->duplex == DUPLEX_FULL) &&
 	    ((phydev->interface == PHY_INTERFACE_MODE_MII) ||
 	    (phydev->interface == PHY_INTERFACE_MODE_GMII) ||
-	     phy_interface_is_rgmii(phydev) ||
+	    (phydev->interface >= PHY_INTERFACE_MODE_RGMII &&
+	     phydev->interface <= PHY_INTERFACE_MODE_RGMII_TXID) ||
 	     phy_is_internal(phydev))) {
 		int eee_lp, eee_cap, eee_adv;
 		u32 lp, cap, adv;
@@ -1265,117 +1209,3 @@ void phy_ethtool_get_wol(struct phy_device *phydev, struct ethtool_wolinfo *wol)
 		phydev->drv->get_wol(phydev, wol);
 }
 EXPORT_SYMBOL(phy_ethtool_get_wol);
-
-int phy_ethtool_edge_rate_set(struct phy_device *phydev,
-			      u8 *rate)
-{
-	struct phy_features_t features;
-
-	if (phydev->drv->phy_features_set) {
-		features.cmd = PHY_EDGE_RATE_CONTROL;
-		features.rate = *rate;
-		phydev->priv = &features;
-		phydev->drv->phy_features_set(phydev);
-	}
-
-	return 0;
-}
-EXPORT_SYMBOL(phy_ethtool_edge_rate_set);
-
-int phy_ethtool_edge_rate_get(struct phy_device *phydev,
-			      u8 *rate)
-{
-	struct phy_features_t features;
-
-	if (phydev->drv->phy_features_set) {
-		features.cmd = PHY_EDGE_RATE_CONTROL;
-		phydev->priv = &features;
-		phydev->drv->phy_features_get(phydev);
-		*rate = features.rate;
-	}
-
-	return 0;
-}
-EXPORT_SYMBOL(phy_ethtool_edge_rate_get);
-
-int phy_ethtool_mac_if_set(struct phy_device *phydev,
-			   struct ethtool_phy_cmd *data)
-{
-	struct phy_features_t features;
-
-	if (phydev->drv->phy_features_set) {
-		features.cmd = PHY_MAC_IF;
-		if (data->val == 2)
-			features.mac_if = PHY_INTERFACE_MODE_RGMII;
-		else if (data->val == 1)
-			features.mac_if = PHY_INTERFACE_MODE_RMII;
-		else
-			features.mac_if = PHY_INTERFACE_MODE_GMII;
-		phydev->priv = &features;
-		phydev->drv->phy_features_set(phydev);
-	}
-
-	return 0;
-}
-EXPORT_SYMBOL(phy_ethtool_mac_if_set);
-
-int phy_ethtool_mac_if_get(struct phy_device *phydev,
-			   struct ethtool_phy_cmd *data)
-{
-	struct phy_features_t features;
-
-	if (phydev->drv->phy_features_get) {
-		features.cmd = PHY_MAC_IF;
-		phydev->priv = &features;
-		phydev->drv->phy_features_get(phydev);
-		if (features.mac_if == PHY_INTERFACE_MODE_RGMII)
-			data->val = 2;
-		else if (features.mac_if == PHY_INTERFACE_MODE_RMII)
-			data->val = 1;
-		else
-			data->val = 0;
-	}
-
-	return 0;
-}
-EXPORT_SYMBOL(phy_ethtool_mac_if_get);
-
-int phy_ethtool_read_reg(struct phy_device *phydev,
-			 struct ethtool_phy_reg *data)
-{
-	struct phy_features_t features;
-	struct ethtool_phy_reg reg_data;
-
-	if (phydev->drv->phy_features_set) {
-		features.cmd = PHY_READ_REG;
-		reg_data.reg = data->reg;
-		reg_data.pg = data->pg;
-		features.data = &reg_data;
-		phydev->priv = &features;
-		phydev->drv->phy_features_get(phydev);
-			data->val = reg_data.val;
-	}
-
-	return 0;
-}
-EXPORT_SYMBOL(phy_ethtool_read_reg);
-
-int phy_ethtool_write_reg(struct phy_device *phydev,
-			  struct ethtool_phy_reg *data)
-{
-	struct phy_features_t features;
-	struct ethtool_phy_reg reg_data;
-
-	if (phydev->drv->phy_features_set) {
-		features.cmd = PHY_WRITE_REG;
-		reg_data.reg = data->reg;
-		reg_data.val = data->val;
-		reg_data.pg = data->pg;
-		features.data = &reg_data;
-		phydev->priv = &features;
-		phydev->drv->phy_features_set(phydev);
-	}
-
-	return 0;
-}
-EXPORT_SYMBOL(phy_ethtool_write_reg);

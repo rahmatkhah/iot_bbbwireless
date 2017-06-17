@@ -33,7 +33,6 @@ struct phy;
 struct phy_ops {
 	int	(*init)(struct phy *phy);
 	int	(*exit)(struct phy *phy);
-	int	(*reset)(struct phy *phy);
 	int	(*power_on)(struct phy *phy);
 	int	(*power_off)(struct phy *phy);
 	struct module *owner;
@@ -117,7 +116,6 @@ int phy_pm_runtime_put_sync(struct phy *phy);
 void phy_pm_runtime_allow(struct phy *phy);
 void phy_pm_runtime_forbid(struct phy *phy);
 int phy_init(struct phy *phy);
-int phy_reset(struct phy *phy);
 int phy_exit(struct phy *phy);
 int phy_power_on(struct phy *phy);
 int phy_power_off(struct phy *phy);
@@ -199,13 +197,6 @@ static inline void phy_pm_runtime_forbid(struct phy *phy)
 }
 
 static inline int phy_init(struct phy *phy)
-{
-	if (!phy)
-		return 0;
-	return -ENOSYS;
-}
-
-static inline int phy_reset(struct phy *phy)
 {
 	if (!phy)
 		return 0;

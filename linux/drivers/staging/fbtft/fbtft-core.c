@@ -341,8 +341,8 @@ static void fbtft_reset(struct fbtft_par *par)
 	mdelay(120);
 }
 
-static void fbtft_update_display(struct fbtft_par *par, unsigned int start_line,
-				 unsigned int end_line)
+static void fbtft_update_display(struct fbtft_par *par, unsigned start_line,
+				 unsigned end_line)
 {
 	size_t offset, len;
 	ktime_t ts_start, ts_end;
@@ -391,11 +391,11 @@ static void fbtft_update_display(struct fbtft_par *par, unsigned int start_line,
 
 	if (unlikely(timeit)) {
 		ts_end = ktime_get();
-		if (!ktime_to_ns(par->update_time))
+		if (ktime_to_ns(par->update_time))
 			par->update_time = ts_start;
 
-		fps = ktime_us_delta(ts_start, par->update_time);
 		par->update_time = ts_start;
+		fps = ktime_us_delta(ts_start, par->update_time);
 		fps = fps ? 1000000 / fps : 0;
 
 		throughput = ktime_us_delta(ts_end, ts_start);
@@ -435,10 +435,10 @@ static void fbtft_mkdirty(struct fb_info *info, int y, int height)
 static void fbtft_deferred_io(struct fb_info *info, struct list_head *pagelist)
 {
 	struct fbtft_par *par = info->par;
-	unsigned int dirty_lines_start, dirty_lines_end;
+	unsigned dirty_lines_start, dirty_lines_end;
 	struct page *page;
 	unsigned long index;
-	unsigned int y_low = 0, y_high = 0;
+	unsigned y_low = 0, y_high = 0;
 	int count = 0;
 
 	spin_lock(&par->dirty_lock);
@@ -526,18 +526,18 @@ static ssize_t fbtft_fb_write(struct fb_info *info, const char __user *buf,
 }
 
 /* from pxafb.c */
-static unsigned int chan_to_field(unsigned int chan, struct fb_bitfield *bf)
+static unsigned int chan_to_field(unsigned chan, struct fb_bitfield *bf)
 {
 	chan &= 0xffff;
 	chan >>= 16 - bf->length;
 	return chan << bf->offset;
 }
 
-static int fbtft_fb_setcolreg(unsigned int regno, unsigned int red, unsigned int green,
-			      unsigned int blue, unsigned int transp,
+static int fbtft_fb_setcolreg(unsigned regno, unsigned red, unsigned green,
+			      unsigned blue, unsigned transp,
 			      struct fb_info *info)
 {
-	unsigned int val;
+	unsigned val;
 	int ret = 1;
 
 	dev_dbg(info->dev,
@@ -654,11 +654,11 @@ struct fb_info *fbtft_framebuffer_alloc(struct fbtft_display *display,
 	u8 *vmem = NULL;
 	void *txbuf = NULL;
 	void *buf = NULL;
-	unsigned int width;
-	unsigned int height;
+	unsigned width;
+	unsigned height;
 	int txbuflen = display->txbuflen;
-	unsigned int bpp = display->bpp;
-	unsigned int fps = display->fps;
+	unsigned bpp = display->bpp;
+	unsigned fps = display->fps;
 	int vmem_size, i;
 	int *init_sequence = display->init_sequence;
 	char *gamma = display->gamma;
@@ -749,7 +749,7 @@ struct fb_info *fbtft_framebuffer_alloc(struct fbtft_display *display,
 	if (!info)
 		goto alloc_fail;
 
-	info->screen_buffer = vmem;
+	info->screen_base = (u8 __force __iomem *)vmem;
 	info->fbops = fbops;
 	info->fbdefio = fbdefio;
 
@@ -820,8 +820,6 @@ struct fb_info *fbtft_framebuffer_alloc(struct fbtft_display *display,
 	/* Transmit buffer */
 	if (txbuflen == -1)
 		txbuflen = vmem_size + 2; /* add in case startbyte is used */
-	if (txbuflen >= vmem_size + 2)
-		txbuflen = 0;
 
 #ifdef __LITTLE_ENDIAN
 	if ((!txbuflen) && (bpp > 8))
@@ -891,7 +889,7 @@ EXPORT_SYMBOL(fbtft_framebuffer_alloc);
 void fbtft_framebuffer_release(struct fb_info *info)
 {
 	fb_deferred_io_cleanup(info);
-	vfree(info->screen_buffer);
+	vfree(info->screen_base);
 	framebuffer_release(info);
 }
 EXPORT_SYMBOL(fbtft_framebuffer_release);

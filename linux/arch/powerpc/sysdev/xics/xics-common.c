@@ -227,7 +227,7 @@ void xics_migrate_irqs_away(void)
 
 		/* Locate interrupt server */
 		server = -1;
-		ics = irq_desc_get_chip_data(desc);
+		ics = irq_get_chip_data(virq);
 		if (ics)
 			server = ics->get_server(ics, irq);
 		if (server < 0) {
@@ -298,8 +298,7 @@ int xics_get_irq_server(unsigned int virq, const struct cpumask *cpumask,
 }
 #endif /* CONFIG_SMP */
 
-static int xics_host_match(struct irq_domain *h, struct device_node *node,
-			   enum irq_domain_bus_token bus_token)
+static int xics_host_match(struct irq_domain *h, struct device_node *node)
 {
 	struct ics *ics;
 
@@ -361,7 +360,7 @@ static int xics_host_xlate(struct irq_domain *h, struct device_node *ct,
 	return 0;
 }
 
-static const struct irq_domain_ops xics_host_ops = {
+static struct irq_domain_ops xics_host_ops = {
 	.match = xics_host_match,
 	.map = xics_host_map,
 	.xlate = xics_host_xlate,

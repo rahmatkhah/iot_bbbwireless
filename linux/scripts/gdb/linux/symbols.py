@@ -14,8 +14,9 @@
 import gdb
 import os
 import re
+import string
 
-from linux import modules
+from linux import modules, utils
 
 
 if hasattr(gdb, 'Breakpoint'):
@@ -96,7 +97,7 @@ lx-symbols command."""
             return ""
         attrs = sect_attrs['attrs']
         section_name_to_address = {
-            attrs[n]['name'].string(): attrs[n]['address']
+            attrs[n]['name'].string() : attrs[n]['address']
             for n in range(int(sect_attrs['nsections']))}
         args = []
         for section_name in [".data", ".data..read_mostly", ".rodata", ".bss"]:
@@ -123,7 +124,7 @@ lx-symbols command."""
                 addr=module_addr,
                 sections=self._section_arguments(module))
             gdb.execute(cmdline, to_string=True)
-            if module_name not in self.loaded_modules:
+            if not module_name in self.loaded_modules:
                 self.loaded_modules.append(module_name)
         else:
             gdb.write("no module object found for '{0}'\n".format(module_name))
@@ -163,7 +164,7 @@ lx-symbols command."""
         self.load_all_symbols()
 
         if hasattr(gdb, 'Breakpoint'):
-            if self.breakpoint is not None:
+            if not self.breakpoint is None:
                 self.breakpoint.delete()
                 self.breakpoint = None
             self.breakpoint = LoadModuleBreakpoint(

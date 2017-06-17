@@ -357,7 +357,7 @@ done:
 	return retval;
 }
 
-void musbhs_dma_controller_destroy(struct dma_controller *c)
+void dma_controller_destroy(struct dma_controller *c)
 {
 	struct musb_dma_controller *controller = container_of(c,
 			struct musb_dma_controller, controller);
@@ -369,10 +369,8 @@ void musbhs_dma_controller_destroy(struct dma_controller *c)
 
 	kfree(controller);
 }
-EXPORT_SYMBOL_GPL(musbhs_dma_controller_destroy);
 
-struct dma_controller *musbhs_dma_controller_create(struct musb *musb,
-						    void __iomem *base)
+struct dma_controller *dma_controller_create(struct musb *musb, void __iomem *base)
 {
 	struct musb_dma_controller *controller;
 	struct device *dev = musb->controller;
@@ -400,7 +398,7 @@ struct dma_controller *musbhs_dma_controller_create(struct musb *musb,
 	if (request_irq(irq, dma_controller_irq, 0,
 			dev_name(musb->controller), &controller->controller)) {
 		dev_err(dev, "request_irq %d failed!\n", irq);
-		musb_dma_controller_destroy(&controller->controller);
+		dma_controller_destroy(&controller->controller);
 
 		return NULL;
 	}
@@ -409,4 +407,3 @@ struct dma_controller *musbhs_dma_controller_create(struct musb *musb,
 
 	return &controller->controller;
 }
-EXPORT_SYMBOL_GPL(musbhs_dma_controller_create);

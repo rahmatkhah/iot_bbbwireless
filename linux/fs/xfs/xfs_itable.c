@@ -252,7 +252,7 @@ xfs_bulkstat_grab_ichunk(
 		}
 
 		irec->ir_free |= xfs_inobt_maskn(0, idx);
-		*icount = irec->ir_count - irec->ir_freecount;
+		*icount = XFS_INODES_PER_CHUNK - irec->ir_freecount;
 	}
 
 	return 0;
@@ -415,8 +415,6 @@ xfs_bulkstat(
 				goto del_cursor;
 			if (icount) {
 				irbp->ir_startino = r.ir_startino;
-				irbp->ir_holemask = r.ir_holemask;
-				irbp->ir_count = r.ir_count;
 				irbp->ir_freecount = r.ir_freecount;
 				irbp->ir_free = r.ir_free;
 				irbp++;
@@ -449,15 +447,13 @@ xfs_bulkstat(
 			 * If this chunk has any allocated inodes, save it.
 			 * Also start read-ahead now for this chunk.
 			 */
-			if (r.ir_freecount < r.ir_count) {
+			if (r.ir_freecount < XFS_INODES_PER_CHUNK) {
 				xfs_bulkstat_ichunk_ra(mp, agno, &r);
 				irbp->ir_startino = r.ir_startino;
-				irbp->ir_holemask = r.ir_holemask;
-				irbp->ir_count = r.ir_count;
 				irbp->ir_freecount = r.ir_freecount;
 				irbp->ir_free = r.ir_free;
 				irbp++;
-				icount += r.ir_count - r.ir_freecount;
+				icount += XFS_INODES_PER_CHUNK - r.ir_freecount;
 			}
 			error = xfs_btree_increment(cur, 0, &stat);
 			if (error || stat == 0) {
@@ -473,8 +469,7 @@ xfs_bulkstat(
 		 * pending error, then we are done.
 		 */
 del_cursor:
-		xfs_btree_del_cursor(cur, error ?
-					  XFS_BTREE_ERROR : XFS_BTREE_NOERROR);
+		xfs_btree_del_cursor(cur, XFS_BTREE_NOERROR);
 		xfs_buf_relse(agbp);
 		if (error)
 			break;
@@ -604,7 +599,8 @@ xfs_inumbers(
 		agino = r.ir_startino + XFS_INODES_PER_CHUNK - 1;
 		buffer[bufidx].xi_startino =
 			XFS_AGINO_TO_INO(mp, agno, r.ir_startino);
-		buffer[bufidx].xi_alloccount = r.ir_count - r.ir_freecount;
+		buffer[bufidx].xi_alloccount =
+			XFS_INODES_PER_CHUNK - r.ir_freecount;
 		buffer[bufidx].xi_allocmask = ~r.ir_free;
 		if (++bufidx == bcount) {
 			long	written;

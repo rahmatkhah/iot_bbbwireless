@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2017 Junjiro R. Okajima
+ * Copyright (C) 2005-2016 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -273,7 +273,7 @@ int au_do_open(struct file *file, struct au_do_open_args *args)
 	}
 	if (unlikely(err)) {
 		finfo->fi_hdir = NULL;
-		au_finfo_fin(file);
+		au_finfo_fin(file, /*atonce*/0);
 	}
 
 out:
@@ -593,6 +593,7 @@ out:
 
 static void au_do_refresh_dir(struct file *file)
 {
+	int execed;
 	aufs_bindex_t bindex, bbot, new_bindex, brid;
 	struct au_hfile *p, tmp, *q;
 	struct au_finfo *finfo;
@@ -631,6 +632,7 @@ static void au_do_refresh_dir(struct file *file)
 		}
 	}
 
+	execed = vfsub_file_execed(file);
 	p = fidir->fd_hfile;
 	if (!au_test_mmapped(file) && !d_unlinked(file->f_path.dentry)) {
 		bbot = au_sbbot(sb);
@@ -639,14 +641,14 @@ static void au_do_refresh_dir(struct file *file)
 			if (p->hf_file) {
 				if (file_inode(p->hf_file))
 					break;
-				au_hfput(p, /*execed*/0);
+				au_hfput(p, execed);
 			}
 	} else {
 		bbot = au_br_index(sb, brid);
 		for (finfo->fi_btop = 0; finfo->fi_btop < bbot;
 		     finfo->fi_btop++, p++)
 			if (p->hf_file)
-				au_hfput(p, /*execed*/0);
+				au_hfput(p, execed);
 		bbot = au_sbbot(sb);
 	}
 
@@ -656,7 +658,7 @@ static void au_do_refresh_dir(struct file *file)
 		if (p->hf_file) {
 			if (file_inode(p->hf_file))
 				break;
-			au_hfput(p, /*execed*/0);
+			au_hfput(p, execed);
 		}
 	AuDebugOn(fidir->fd_bbot < finfo->fi_btop);
 }
@@ -666,26 +668,23 @@ static void au_do_refresh_dir(struct file *file)
  */
 static int refresh_file(struct file *file, int (*reopen)(struct file *file))
 {
-	int err, need_reopen, nbr;
+	int err, need_reopen;
 	aufs_bindex_t bbot, bindex;
 	struct dentry *dentry;
-	struct super_block *sb;
 	struct au_finfo *finfo;
 	struct au_hfile *hfile;
 
 	dentry = file->f_path.dentry;
-	sb = dentry->d_sb;
-	nbr = au_sbbot(sb) + 1;
 	finfo = au_fi(file);
 	if (!finfo->fi_hdir) {
 		hfile = &finfo->fi_htop;
 		AuDebugOn(!hfile->hf_file);
-		bindex = au_br_index(sb, hfile->hf_br->br_id);
+		bindex = au_br_index(dentry->d_sb, hfile->hf_br->br_id);
 		AuDebugOn(bindex < 0);
 		if (bindex != finfo->fi_btop)
 			au_set_fbtop(file, bindex);
 	} else {
-		err = au_fidir_realloc(finfo, nbr, /*may_shrink*/0);
+		err = au_fidir_realloc(finfo, au_sbbot(dentry->d_sb) + 1);
 		if (unlikely(err))
 			goto out;
 		au_do_refresh_dir(file);
@@ -695,9 +694,6 @@ static int refresh_file(struct file *file, int (*reopen)(struct file *file))
 	need_reopen = 1;
 	if (!au_test_mmapped(file))
 		err = au_file_refresh_by_inode(file, &need_reopen);
-	if (finfo->fi_hdir)
-		/* harmless if err */
-		au_fidir_realloc(finfo, nbr, /*may_shrink*/1);
 	if (!err && need_reopen && !d_unlinked(dentry))
 		err = reopen(file);
 	if (!err) {

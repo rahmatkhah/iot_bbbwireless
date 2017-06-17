@@ -129,7 +129,7 @@ void __init shm_init(void)
 
 static inline struct shmid_kernel *shm_obtain_object(struct ipc_namespace *ns, int id)
 {
-	struct kern_ipc_perm *ipcp = ipc_obtain_object_idr(&shm_ids(ns), id);
+	struct kern_ipc_perm *ipcp = ipc_obtain_object(&shm_ids(ns), id);
 
 	if (IS_ERR(ipcp))
 		return ERR_CAST(ipcp);
@@ -578,7 +578,7 @@ static int newseg(struct ipc_namespace *ns, struct ipc_params *params)
 		if  ((shmflg & SHM_NORESERVE) &&
 				sysctl_overcommit_memory != OVERCOMMIT_NEVER)
 			acctflag = VM_NORESERVE;
-		file = shmem_kernel_file_setup(name, size, acctflag);
+		file = shmem_file_setup(name, size, acctflag);
 	}
 	error = PTR_ERR(file);
 	if (IS_ERR(file))
@@ -1083,8 +1083,8 @@ out_unlock1:
  * "raddr" thing points to kernel space, and there has to be a wrapper around
  * this.
  */
-long do_shmat(int shmid, char __user *shmaddr, int shmflg,
-	      ulong *raddr, unsigned long shmlba)
+long do_shmat(int shmid, char __user *shmaddr, int shmflg, ulong *raddr,
+	      unsigned long shmlba)
 {
 	struct shmid_kernel *shp;
 	unsigned long addr;
@@ -1105,13 +1105,8 @@ long do_shmat(int shmid, char __user *shmaddr, int shmflg,
 		goto out;
 	else if ((addr = (ulong)shmaddr)) {
 		if (addr & (shmlba - 1)) {
-			/*
-			 * Round down to the nearest multiple of shmlba.
-			 * For sane do_mmap_pgoff() parameters, avoid
-			 * round downs that trigger nil-page and MAP_FIXED.
-			 */
-			if ((shmflg & SHM_RND) && addr >= shmlba)
-				addr &= ~(shmlba - 1);
+			if (shmflg & SHM_RND)
+				addr &= ~(shmlba - 1);	   /* round down */
 			else
 #ifndef __ARCH_FORCE_SHMLBA
 				if (addr & ~PAGE_MASK)

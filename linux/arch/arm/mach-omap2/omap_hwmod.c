@@ -130,7 +130,6 @@
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/io.h>
-#include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/delay.h>
 #include <linux/err.h>
@@ -1682,6 +1681,7 @@ static int _deassert_hardreset(struct omap_hwmod *oh, const char *name)
 {
 	struct omap_hwmod_rst_info ohri;
 	int ret = -EINVAL;
+	int hwsup = 0;
 
 	if (!oh)
 		return -EINVAL;
@@ -1699,7 +1699,7 @@ static int _deassert_hardreset(struct omap_hwmod *oh, const char *name)
 		 * might not be completed. The clockdomain can be set
 		 * in HW_AUTO only when the module become ready.
 		 */
-		clkdm_deny_idle(oh->clkdm);
+		hwsup = clkdm_in_hwsup(oh->clkdm);
 		ret = clkdm_hwmod_enable(oh->clkdm, oh);
 		if (ret) {
 			WARN(1, "omap_hwmod: %s: could not enable clockdomain %s: %d\n",
@@ -1726,7 +1726,8 @@ static int _deassert_hardreset(struct omap_hwmod *oh, const char *name)
 		 * Set the clockdomain to HW_AUTO, assuming that the
 		 * previous state was HW_AUTO.
 		 */
-		clkdm_allow_idle(oh->clkdm);
+		if (hwsup)
+			clkdm_allow_idle(oh->clkdm);
 
 		clkdm_hwmod_disable(oh->clkdm, oh);
 	}
@@ -2080,6 +2081,7 @@ static int _enable_preprogram(struct omap_hwmod *oh)
 static int _enable(struct omap_hwmod *oh)
 {
 	int r;
+	int hwsup = 0;
 
 	pr_debug("omap_hwmod: %s: enabling\n", oh->name);
 
@@ -2139,7 +2141,8 @@ static int _enable(struct omap_hwmod *oh)
 		 * completely the module. The clockdomain can be set
 		 * in HW_AUTO only when the module become ready.
 		 */
-		clkdm_deny_idle(oh->clkdm);
+		hwsup = clkdm_in_hwsup(oh->clkdm) &&
+			!clkdm_missing_idle_reporting(oh->clkdm);
 		r = clkdm_hwmod_enable(oh->clkdm, oh);
 		if (r) {
 			WARN(1, "omap_hwmod: %s: could not enable clockdomain %s: %d\n",
@@ -2159,12 +2162,17 @@ static int _enable(struct omap_hwmod *oh)
 
 	r = (soc_ops.wait_target_ready) ? soc_ops.wait_target_ready(oh) :
 		-EINVAL;
-
-	if (oh->clkdm)
-		if (!r && !(oh->flags & HWMOD_CLKDM_NOAUTO))
-			clkdm_allow_idle(oh->clkdm);
-
 	if (!r) {
+		if (oh->clkdm && (oh->flags & HWMOD_CLKDM_NOAUTO))
+			clkdm_hwmod_prevent_hwauto(oh->clkdm, oh);
+
+		/*
+		 * Set the clockdomain to HW_AUTO only if the target is ready,
+		 * assuming that the previous state was HW_AUTO
+		 */
+		if (oh->clkdm && hwsup)
+			clkdm_hwmod_hwauto(oh->clkdm, oh);
+
 		oh->_state = _HWMOD_STATE_ENABLED;
 
 		/* Access the sysconfig only if the target is ready */
@@ -2205,21 +2213,18 @@ static int _idle(struct omap_hwmod *oh)
 
 	pr_debug("omap_hwmod: %s: idling\n", oh->name);
 
-	if (_are_all_hardreset_lines_asserted(oh))
-		return 0;
-
 	if (oh->_state != _HWMOD_STATE_ENABLED) {
 		WARN(1, "omap_hwmod: %s: idle state can only be entered from enabled state\n",
 			oh->name);
 		return -EINVAL;
 	}
 
+	if (_are_all_hardreset_lines_asserted(oh))
+		return 0;
+
 	if (oh->class->sysc)
 		_idle_sysc(oh);
 	_del_initiator_dep(oh, mpu_oh);
-
-	if (oh->clkdm && !(oh->flags & HWMOD_CLKDM_NOAUTO))
-		clkdm_deny_idle(oh->clkdm);
 
 	if (oh->flags & HWMOD_BLOCK_WFI)
 		cpu_idle_poll_ctrl(false);
@@ -2235,7 +2240,11 @@ static int _idle(struct omap_hwmod *oh)
 	_disable_clocks(oh);
 
 	if (oh->clkdm) {
-		clkdm_allow_idle(oh->clkdm);
+		if (oh->flags & HWMOD_CLKDM_NOAUTO) {
+			clkdm_hwmod_allow_hwauto(oh->clkdm, oh);
+			clkdm_hwmod_hwauto(oh->clkdm, oh);
+		}
+
 		clkdm_hwmod_disable(oh->clkdm, oh);
 	}
 
@@ -2266,15 +2275,15 @@ static int _shutdown(struct omap_hwmod *oh)
 	int ret, i;
 	u8 prev_state;
 
-	if (_are_all_hardreset_lines_asserted(oh))
-		return 0;
-
 	if (oh->_state != _HWMOD_STATE_IDLE &&
 	    oh->_state != _HWMOD_STATE_ENABLED) {
 		WARN(1, "omap_hwmod: %s: disabled state can only be entered from idle, or enabled state\n",
 			oh->name);
 		return -EINVAL;
 	}
+
+	if (_are_all_hardreset_lines_asserted(oh))
+		return 0;
 
 	pr_debug("omap_hwmod: %s: disabling\n", oh->name);
 
@@ -2946,9 +2955,6 @@ static int _omap2xxx_3xxx_wait_target_ready(struct omap_hwmod *oh)
 	if (oh->flags & HWMOD_NO_IDLEST)
 		return 0;
 
-	if (!_find_mpu_rt_port(oh))
-		return 0;
-
 	/* XXX check module SIDLEMODE, hardreset status, enabled clocks */
 
 	return omap_cm_wait_module_ready(0, oh->prcm.omap2.module_offs,
@@ -2971,9 +2977,6 @@ static int _omap4_wait_target_ready(struct omap_hwmod *oh)
 		return -EINVAL;
 
 	if (oh->flags & HWMOD_NO_IDLEST || !oh->clkdm)
-		return 0;
-
-	if (!_find_mpu_rt_port(oh))
 		return 0;
 
 	/* XXX check module SIDLEMODE, hardreset status */
@@ -3473,17 +3476,16 @@ int omap_hwmod_enable(struct omap_hwmod *oh)
  */
 int omap_hwmod_idle(struct omap_hwmod *oh)
 {
-	int r;
 	unsigned long flags;
 
 	if (!oh)
 		return -EINVAL;
 
 	spin_lock_irqsave(&oh->_lock, flags);
-	r = _idle(oh);
+	_idle(oh);
 	spin_unlock_irqrestore(&oh->_lock, flags);
 
-	return r;
+	return 0;
 }
 
 /**
@@ -3496,17 +3498,16 @@ int omap_hwmod_idle(struct omap_hwmod *oh)
  */
 int omap_hwmod_shutdown(struct omap_hwmod *oh)
 {
-	int r;
 	unsigned long flags;
 
 	if (!oh)
 		return -EINVAL;
 
 	spin_lock_irqsave(&oh->_lock, flags);
-	r = _shutdown(oh);
+	_shutdown(oh);
 	spin_unlock_irqrestore(&oh->_lock, flags);
 
-	return r;
+	return 0;
 }
 
 /*
@@ -4033,8 +4034,7 @@ void __init omap_hwmod_init(void)
 		soc_ops.init_clkdm = _init_clkdm;
 		soc_ops.update_context_lost = _omap4_update_context_lost;
 		soc_ops.get_context_lost = _omap4_get_context_lost;
-	} else if (cpu_is_ti814x() || cpu_is_ti816x() || soc_is_am33xx() ||
-		   soc_is_am43xx()) {
+	} else if (cpu_is_ti816x() || soc_is_am33xx() || soc_is_am43xx()) {
 		soc_ops.enable_module = _omap4_enable_module;
 		soc_ops.disable_module = _omap4_disable_module;
 		soc_ops.wait_target_ready = _omap4_wait_target_ready;

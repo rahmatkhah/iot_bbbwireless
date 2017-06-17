@@ -373,7 +373,7 @@ static int edp_gpio_config(struct edp_ctrl *ctrl)
 	struct device *dev = &ctrl->pdev->dev;
 	int ret;
 
-	ctrl->panel_hpd_gpio = devm_gpiod_get(dev, "panel-hpd", GPIOD_IN);
+	ctrl->panel_hpd_gpio = devm_gpiod_get(dev, "panel-hpd");
 	if (IS_ERR(ctrl->panel_hpd_gpio)) {
 		ret = PTR_ERR(ctrl->panel_hpd_gpio);
 		ctrl->panel_hpd_gpio = NULL;
@@ -381,11 +381,24 @@ static int edp_gpio_config(struct edp_ctrl *ctrl)
 		return ret;
 	}
 
-	ctrl->panel_en_gpio = devm_gpiod_get(dev, "panel-en", GPIOD_OUT_LOW);
+	ret = gpiod_direction_input(ctrl->panel_hpd_gpio);
+	if (ret) {
+		pr_err("%s: Set direction for hpd failed, %d\n", __func__, ret);
+		return ret;
+	}
+
+	ctrl->panel_en_gpio = devm_gpiod_get(dev, "panel-en");
 	if (IS_ERR(ctrl->panel_en_gpio)) {
 		ret = PTR_ERR(ctrl->panel_en_gpio);
 		ctrl->panel_en_gpio = NULL;
 		pr_err("%s: cannot get panel-en-gpios, %d\n", __func__, ret);
+		return ret;
+	}
+
+	ret = gpiod_direction_output(ctrl->panel_en_gpio, 0);
+	if (ret) {
+		pr_err("%s: Set direction for panel_en failed, %d\n",
+				__func__, ret);
 		return ret;
 	}
 
@@ -1005,7 +1018,7 @@ static void edp_ctrl_off_worker(struct work_struct *work)
 {
 	struct edp_ctrl *ctrl = container_of(
 				work, struct edp_ctrl, off_work);
-	unsigned long time_left;
+	int ret;
 
 	mutex_lock(&ctrl->dev_mutex);
 
@@ -1017,10 +1030,11 @@ static void edp_ctrl_off_worker(struct work_struct *work)
 	reinit_completion(&ctrl->idle_comp);
 	edp_state_ctrl(ctrl, EDP_STATE_CTRL_PUSH_IDLE);
 
-	time_left = wait_for_completion_timeout(&ctrl->idle_comp,
+	ret = wait_for_completion_timeout(&ctrl->idle_comp,
 						msecs_to_jiffies(500));
-	if (!time_left)
-		DBG("%s: idle pattern timedout\n", __func__);
+	if (ret <= 0)
+		DBG("%s: idle pattern timedout, %d\n",
+				__func__, ret);
 
 	edp_state_ctrl(ctrl, 0);
 

@@ -39,9 +39,7 @@
 #include <asm/processor.h>
 #include <asm/percpu.h>
 #include <asm/desc.h>
-
 #include <linux/random.h>
-#include <linux/sched.h>
 
 /*
  * 24 byte read-only segment initializer for stack canary.  Linker
@@ -74,12 +72,13 @@ static __always_inline void boot_init_stack_canary(void)
 	 * For preempt-rt we need to weaken the randomness a bit, as
 	 * we can't call into the random generator from atomic context
 	 * due to locking constraints. We just leave canary
-	 * uninitialized and use the TSC based randomness on top of it.
+	 * uninitialized and use the TSC based randomness on top of
+	 * it.
 	 */
 #ifndef CONFIG_PREEMPT_RT_FULL
 	get_random_bytes(&canary, sizeof(canary));
 #endif
-	tsc = rdtsc();
+	tsc = __native_read_tsc();
 	canary += tsc + (tsc << 32UL);
 
 	current->stack_canary = canary;

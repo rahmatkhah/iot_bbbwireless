@@ -91,13 +91,13 @@ static int gameport_measure_speed(struct gameport *gameport)
 	tx = ~0;
 
 	for (i = 0; i < 50; i++) {
-		local_irq_save_nort(flags);
+		local_irq_save(flags);
 		t1 = ktime_get_ns();
 		for (t = 0; t < 50; t++)
 			gameport_read(gameport);
 		t2 = ktime_get_ns();
 		t3 = ktime_get_ns();
-		local_irq_restore_nort(flags);
+		local_irq_restore(flags);
 		udelay(i * 10);
 		t = (t2 - t1) - (t3 - t2);
 		if (t < tx)
@@ -149,9 +149,9 @@ static int old_gameport_measure_speed(struct gameport *gameport)
 
 	for(i = 0; i < 50; i++) {
 		local_irq_save_nort(flags);
-		t1 = rdtsc();
+		rdtscl(t1);
 		for (t = 0; t < 50; t++) gameport_read(gameport);
-		t2 = rdtsc();
+		rdtscl(t2);
 		local_irq_restore_nort(flags);
 		udelay(i * 10);
 		if (t2 - t1 < tx) tx = t2 - t1;

@@ -178,9 +178,7 @@ struct dm_cache_policy {
 	int (*remove_cblock)(struct dm_cache_policy *p, dm_cblock_t cblock);
 
 	/*
-	 * Provide a dirty block to be written back by the core target.  If
-	 * critical_only is set then the policy should only provide work if
-	 * it urgently needs it.
+	 * Provide a dirty block to be written back by the core target.
 	 *
 	 * Returns:
 	 *
@@ -188,8 +186,7 @@ struct dm_cache_policy {
 	 *
 	 * -ENODATA: no dirty blocks available
 	 */
-	int (*writeback_work)(struct dm_cache_policy *p, dm_oblock_t *oblock, dm_cblock_t *cblock,
-			      bool critical_only);
+	int (*writeback_work)(struct dm_cache_policy *p, dm_oblock_t *oblock, dm_cblock_t *cblock);
 
 	/*
 	 * How full is the cache?
@@ -200,16 +197,16 @@ struct dm_cache_policy {
 	 * Because of where we sit in the block layer, we can be asked to
 	 * map a lot of little bios that are all in the same block (no
 	 * queue merging has occurred).  To stop the policy being fooled by
-	 * these, the core target sends regular tick() calls to the policy.
+	 * these the core target sends regular tick() calls to the policy.
 	 * The policy should only count an entry as hit once per tick.
 	 */
-	void (*tick)(struct dm_cache_policy *p, bool can_block);
+	void (*tick)(struct dm_cache_policy *p);
 
 	/*
 	 * Configuration.
 	 */
-	int (*emit_config_values)(struct dm_cache_policy *p, char *result,
-				  unsigned maxlen, ssize_t *sz_ptr);
+	int (*emit_config_values)(struct dm_cache_policy *p,
+				  char *result, unsigned maxlen);
 	int (*set_config_value)(struct dm_cache_policy *p,
 				const char *key, const char *value);
 

@@ -48,7 +48,7 @@ static inline struct fou *fou_from_sock(struct sock *sk)
 	return sk->sk_user_data;
 }
 
-static int fou_recv_pull(struct sk_buff *skb, size_t len)
+static void fou_recv_pull(struct sk_buff *skb, size_t len)
 {
 	struct iphdr *iph = ip_hdr(skb);
 
@@ -59,7 +59,6 @@ static int fou_recv_pull(struct sk_buff *skb, size_t len)
 	__skb_pull(skb, len);
 	skb_postpull_rcsum(skb, udp_hdr(skb), len);
 	skb_reset_transport_header(skb);
-	return iptunnel_pull_offloads(skb);
 }
 
 static int fou_udp_recv(struct sock *sk, struct sk_buff *skb)
@@ -69,14 +68,9 @@ static int fou_udp_recv(struct sock *sk, struct sk_buff *skb)
 	if (!fou)
 		return 1;
 
-	if (fou_recv_pull(skb, sizeof(struct udphdr)))
-		goto drop;
+	fou_recv_pull(skb, sizeof(struct udphdr));
 
 	return -fou->protocol;
-
-drop:
-	kfree_skb(skb);
-	return 0;
 }
 
 static struct guehdr *gue_remcsum(struct sk_buff *skb, struct guehdr *guehdr,
@@ -86,11 +80,7 @@ static struct guehdr *gue_remcsum(struct sk_buff *skb, struct guehdr *guehdr,
 	__be16 *pd = data;
 	size_t start = ntohs(pd[0]);
 	size_t offset = ntohs(pd[1]);
-	size_t plen = sizeof(struct udphdr) + hdrlen +
-	    max_t(size_t, offset + sizeof(u16), start);
-
-	if (skb->remcsum_offload)
-		return guehdr;
+	size_t plen = hdrlen + max_t(size_t, offset + sizeof(u16), start);
 
 	if (!pskb_may_pull(skb, plen))
 		return NULL;
@@ -176,9 +166,6 @@ static int gue_udp_recv(struct sock *sk, struct sk_buff *skb)
 	__skb_pull(skb, sizeof(struct udphdr) + hdrlen);
 	skb_reset_transport_header(skb);
 
-	if (iptunnel_pull_offloads(skb))
-		goto drop;
-
 	return -guehdr->proto_ctype;
 
 drop:
@@ -201,7 +188,7 @@ static struct sk_buff **fou_gro_receive(struct sk_buff **head,
 	if (!ops || !ops->callbacks.gro_receive)
 		goto out_unlock;
 
-	pp = call_gro_receive(ops->callbacks.gro_receive, head, skb);
+	pp = ops->callbacks.gro_receive(head, skb);
 
 out_unlock:
 	rcu_read_unlock();
@@ -235,21 +222,29 @@ out_unlock:
 
 static struct guehdr *gue_gro_remcsum(struct sk_buff *skb, unsigned int off,
 				      struct guehdr *guehdr, void *data,
-				      size_t hdrlen, struct gro_remcsum *grc,
-				      bool nopartial)
+				      size_t hdrlen, u8 ipproto,
+				      struct gro_remcsum *grc, bool nopartial)
 {
 	__be16 *pd = data;
 	size_t start = ntohs(pd[0]);
 	size_t offset = ntohs(pd[1]);
+	size_t plen = hdrlen + max_t(size_t, offset + sizeof(u16), start);
 
 	if (skb->remcsum_offload)
-		return guehdr;
+		return NULL;
 
 	if (!NAPI_GRO_CB(skb)->csum_valid)
 		return NULL;
 
-	guehdr = skb_gro_remcsum_process(skb, (void *)guehdr, off, hdrlen,
-					 start, offset, grc, nopartial);
+	/* Pull checksum that will be written */
+	if (skb_gro_header_hard(skb, off + plen)) {
+		guehdr = skb_gro_header_slow(skb, off + plen, off);
+		if (!guehdr)
+			return NULL;
+	}
+
+	skb_gro_remcsum_process(skb, (void *)guehdr + hdrlen,
+				start, offset, grc, nopartial);
 
 	skb->remcsum_offload = 1;
 
@@ -313,10 +308,10 @@ static struct sk_buff **gue_gro_receive(struct sk_buff **head,
 
 		if (flags & GUE_PFLAG_REMCSUM) {
 			guehdr = gue_gro_remcsum(skb, off, guehdr,
-						 data + doffset, hdrlen, &grc,
+						 data + doffset, hdrlen,
+						 guehdr->proto_ctype, &grc,
 						 !!(fou->flags &
 						    FOU_F_REMCSUM_NOPARTIAL));
-
 			if (!guehdr)
 				goto out;
 
@@ -357,10 +352,10 @@ static struct sk_buff **gue_gro_receive(struct sk_buff **head,
 	rcu_read_lock();
 	offloads = NAPI_GRO_CB(skb)->is_ipv6 ? inet6_offloads : inet_offloads;
 	ops = rcu_dereference(offloads[guehdr->proto_ctype]);
-	if (WARN_ON_ONCE(!ops || !ops->callbacks.gro_receive))
+	if (WARN_ON(!ops || !ops->callbacks.gro_receive))
 		goto out_unlock;
 
-	pp = call_gro_receive(ops->callbacks.gro_receive, head, skb);
+	pp = ops->callbacks.gro_receive(head, skb);
 
 out_unlock:
 	rcu_read_unlock();
@@ -576,7 +571,7 @@ static int parse_nl_config(struct genl_info *info,
 	if (info->attrs[FOU_ATTR_AF]) {
 		u8 family = nla_get_u8(info->attrs[FOU_ATTR_AF]);
 
-		if (family != AF_INET)
+		if (family != AF_INET && family != AF_INET6)
 			return -EINVAL;
 
 		cfg->udp_config.family = family;

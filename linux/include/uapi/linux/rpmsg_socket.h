@@ -1,7 +1,7 @@
 /*
  * Remote processor messaging sockets
  *
- * Copyright (C) 2011-2016 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C) 2011-2015 Texas Instruments, Inc
  *
  * Ohad Ben-Cohen <ohad@wizery.com>
  * Suman Anna <s-anna@ti.com>

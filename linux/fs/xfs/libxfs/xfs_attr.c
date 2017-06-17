@@ -125,7 +125,7 @@ xfs_attr_get(
 	uint			lock_mode;
 	int			error;
 
-	XFS_STATS_INC(ip->i_mount, xs_attr_get);
+	XFS_STATS_INC(xs_attr_get);
 
 	if (XFS_FORCED_SHUTDOWN(ip->i_mount))
 		return -EIO;
@@ -139,8 +139,6 @@ xfs_attr_get(
 
 	args.value = value;
 	args.valuelen = *valuelenp;
-	/* Entirely possible to look up a name which doesn't exist */
-	args.op_flags = XFS_DA_OP_OKNOENT;
 
 	lock_mode = xfs_ilock_attr_map_shared(ip);
 	if (!xfs_inode_hasattr(ip))
@@ -209,7 +207,7 @@ xfs_attr_set(
 	int			rsvd = (flags & ATTR_ROOT) != 0;
 	int			error, err2, committed, local;
 
-	XFS_STATS_INC(mp, xs_attr_set);
+	XFS_STATS_INC(xs_attr_set);
 
 	if (XFS_FORCED_SHUTDOWN(dp->i_mount))
 		return -EIO;
@@ -268,7 +266,7 @@ xfs_attr_set(
 	tres.tr_logflags = XFS_TRANS_PERM_LOG_RES;
 	error = xfs_trans_reserve(args.trans, &tres, args.total, 0);
 	if (error) {
-		xfs_trans_cancel(args.trans);
+		xfs_trans_cancel(args.trans, 0);
 		return error;
 	}
 	xfs_ilock(dp, XFS_ILOCK_EXCL);
@@ -278,7 +276,7 @@ xfs_attr_set(
 				       XFS_QMOPT_RES_REGBLKS);
 	if (error) {
 		xfs_iunlock(dp, XFS_ILOCK_EXCL);
-		xfs_trans_cancel(args.trans);
+		xfs_trans_cancel(args.trans, XFS_TRANS_RELEASE_LOG_RES);
 		return error;
 	}
 
@@ -322,7 +320,8 @@ xfs_attr_set(
 				xfs_trans_ichgtime(args.trans, dp,
 							XFS_ICHGTIME_CHG);
 			}
-			err2 = xfs_trans_commit(args.trans);
+			err2 = xfs_trans_commit(args.trans,
+						 XFS_TRANS_RELEASE_LOG_RES);
 			xfs_iunlock(dp, XFS_ILOCK_EXCL);
 
 			return error ? error : err2;
@@ -384,14 +383,16 @@ xfs_attr_set(
 	 * Commit the last in the sequence of transactions.
 	 */
 	xfs_trans_log_inode(args.trans, dp, XFS_ILOG_CORE);
-	error = xfs_trans_commit(args.trans);
+	error = xfs_trans_commit(args.trans, XFS_TRANS_RELEASE_LOG_RES);
 	xfs_iunlock(dp, XFS_ILOCK_EXCL);
 
 	return error;
 
 out:
-	if (args.trans)
-		xfs_trans_cancel(args.trans);
+	if (args.trans) {
+		xfs_trans_cancel(args.trans,
+			XFS_TRANS_RELEASE_LOG_RES|XFS_TRANS_ABORT);
+	}
 	xfs_iunlock(dp, XFS_ILOCK_EXCL);
 	return error;
 }
@@ -412,7 +413,7 @@ xfs_attr_remove(
 	xfs_fsblock_t		firstblock;
 	int			error;
 
-	XFS_STATS_INC(mp, xs_attr_remove);
+	XFS_STATS_INC(xs_attr_remove);
 
 	if (XFS_FORCED_SHUTDOWN(dp->i_mount))
 		return -EIO;
@@ -461,7 +462,7 @@ xfs_attr_remove(
 	error = xfs_trans_reserve(args.trans, &M_RES(mp)->tr_attrrm,
 				  XFS_ATTRRM_SPACE_RES(mp), 0);
 	if (error) {
-		xfs_trans_cancel(args.trans);
+		xfs_trans_cancel(args.trans, 0);
 		return error;
 	}
 
@@ -500,14 +501,16 @@ xfs_attr_remove(
 	 * Commit the last in the sequence of transactions.
 	 */
 	xfs_trans_log_inode(args.trans, dp, XFS_ILOG_CORE);
-	error = xfs_trans_commit(args.trans);
+	error = xfs_trans_commit(args.trans, XFS_TRANS_RELEASE_LOG_RES);
 	xfs_iunlock(dp, XFS_ILOCK_EXCL);
 
 	return error;
 
 out:
-	if (args.trans)
-		xfs_trans_cancel(args.trans);
+	if (args.trans) {
+		xfs_trans_cancel(args.trans,
+			XFS_TRANS_RELEASE_LOG_RES|XFS_TRANS_ABORT);
+	}
 	xfs_iunlock(dp, XFS_ILOCK_EXCL);
 	return error;
 }

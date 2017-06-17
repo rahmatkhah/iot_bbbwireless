@@ -711,16 +711,10 @@ static int uss720_probe(struct usb_interface *intf,
 
 	interface = intf->cur_altsetting;
 
-	if (interface->desc.bNumEndpoints < 3) {
-		usb_put_dev(usbdev);
-		return -ENODEV;
-	}
-
 	/*
 	 * Allocate parport interface 
 	 */
-	priv = kzalloc(sizeof(struct parport_uss720_private), GFP_KERNEL);
-	if (!priv) {
+	if (!(priv = kzalloc(sizeof(struct parport_uss720_private), GFP_KERNEL))) {
 		usb_put_dev(usbdev);
 		return -ENOMEM;
 	}
@@ -729,8 +723,7 @@ static int uss720_probe(struct usb_interface *intf,
 	kref_init(&priv->ref_count);
 	spin_lock_init(&priv->asynclock);
 	INIT_LIST_HEAD(&priv->asynclist);
-	pp = parport_register_port(0, PARPORT_IRQ_NONE, PARPORT_DMA_NONE, &parport_uss720_ops);
-	if (!pp) {
+	if (!(pp = parport_register_port(0, PARPORT_IRQ_NONE, PARPORT_DMA_NONE, &parport_uss720_ops))) {
 		printk(KERN_WARNING "uss720: could not register parport\n");
 		goto probe_abort;
 	}

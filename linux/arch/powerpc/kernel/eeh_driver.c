@@ -439,9 +439,7 @@ static void *eeh_rmv_device(void *data, void *userdata)
 	driver = eeh_pcid_get(dev);
 	if (driver) {
 		eeh_pcid_put(dev);
-		if (driver->err_handler &&
-		    driver->err_handler->error_detected &&
-		    driver->err_handler->slot_reset)
+		if (driver->err_handler)
 			return NULL;
 	}
 
@@ -485,7 +483,7 @@ static void *eeh_pe_detach_dev(void *data, void *userdata)
 static void *__eeh_clear_pe_frozen_state(void *data, void *flag)
 {
 	struct eeh_pe *pe = (struct eeh_pe *)data;
-	bool clear_sw_state = *(bool *)flag;
+	bool *clear_sw_state = flag;
 	int i, rc = 1;
 
 	for (i = 0; rc && i < 3; i++)
@@ -612,10 +610,8 @@ static int eeh_reset_device(struct eeh_pe *pe, struct pci_bus *bus)
 
 	/* Clear frozen state */
 	rc = eeh_clear_pe_frozen_state(pe, false);
-	if (rc) {
-		pci_unlock_rescan_remove();
+	if (rc)
 		return rc;
-	}
 
 	/* Give the system 5 seconds to finish running the user-space
 	 * hotplug shutdown scripts, e.g. ifdown for ethernet.  Yes,
@@ -680,20 +676,12 @@ static void eeh_handle_normal_event(struct eeh_pe *pe)
 	 * to accomplish the reset.  Each child gets a report of the
 	 * status ... if any child can't handle the reset, then the entire
 	 * slot is dlpar removed and added.
-	 *
-	 * When the PHB is fenced, we have to issue a reset to recover from
-	 * the error. Override the result if necessary to have partially
-	 * hotplug for this case.
 	 */
 	pr_info("EEH: Notify device drivers to shutdown\n");
 	eeh_pe_dev_traverse(pe, eeh_report_error, &result);
-	if ((pe->type & EEH_PE_PHB) &&
-	    result != PCI_ERS_RESULT_NONE &&
-	    result != PCI_ERS_RESULT_NEED_RESET)
-		result = PCI_ERS_RESULT_NEED_RESET;
 
 	/* Get the current PCI slot state. This can take a long time,
-	 * sometimes over 300 seconds for certain systems.
+	 * sometimes over 3 seconds for certain systems.
 	 */
 	rc = eeh_ops->wait_state(pe, MAX_WAIT_FOR_RECOVERY*1000);
 	if (rc < 0 || rc == EEH_STATE_NOT_SUPPORT) {
@@ -911,14 +899,6 @@ static void eeh_handle_special_event(void)
 				/* Notify all devices to be down */
 				eeh_pe_state_clear(pe, EEH_PE_PRI_BUS);
 				bus = eeh_pe_bus_get(phb_pe);
-				if (!bus) {
-					pr_err("%s: Cannot find PCI bus for "
-					       "PHB#%d-PE#%x\n",
-					       __func__,
-					       pe->phb->global_number,
-					       pe->addr);
-					break;
-				}
 				eeh_pe_dev_traverse(pe,
 					eeh_report_failure, NULL);
 				pcibios_remove_pci_devices(bus);

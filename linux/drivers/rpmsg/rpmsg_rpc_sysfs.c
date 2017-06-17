@@ -1,7 +1,7 @@
 /*
  * Remote Processor Procedure Call Driver
  *
- * Copyright (C) 2012-2016 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright(c) 2012-2015 Texas Instruments. All rights reserved.
  *
  * Erik Rainey <erik.rainey@ti.com>
  * Suman Anna <s-anna@ti.com>

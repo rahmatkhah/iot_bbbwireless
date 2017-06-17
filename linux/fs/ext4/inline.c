@@ -336,10 +336,8 @@ static int ext4_update_inline_data(handle_t *handle, struct inode *inode,
 
 	len -= EXT4_MIN_INLINE_DATA_SIZE;
 	value = kzalloc(len, GFP_NOFS);
-	if (!value) {
-		error = -ENOMEM;
+	if (!value)
 		goto out;
-	}
 
 	error = ext4_xattr_ibody_get(inode, i.name_index, i.name,
 				     value, len);
@@ -436,7 +434,8 @@ static int ext4_destroy_inline_data_nolock(handle_t *handle,
 	memset((void *)ext4_raw_inode(&is.iloc)->i_block,
 		0, EXT4_MIN_INLINE_DATA_SIZE);
 
-	if (ext4_has_feature_extents(inode->i_sb)) {
+	if (EXT4_HAS_INCOMPAT_FEATURE(inode->i_sb,
+				      EXT4_FEATURE_INCOMPAT_EXTENTS)) {
 		if (S_ISDIR(inode->i_mode) ||
 		    S_ISREG(inode->i_mode) || S_ISLNK(inode->i_mode)) {
 			ext4_set_inode_flag(inode, EXT4_INODE_EXTENTS);
@@ -933,15 +932,8 @@ int ext4_da_write_inline_data_end(struct inode *inode, loff_t pos,
 				  struct page *page)
 {
 	int i_size_changed = 0;
-	int ret;
 
-	ret = ext4_write_inline_data_end(inode, pos, len, copied, page);
-	if (ret < 0) {
-		unlock_page(page);
-		put_page(page);
-		return ret;
-	}
-	copied = ret;
+	copied = ext4_write_inline_data_end(inode, pos, len, copied, page);
 
 	/*
 	 * No need to use i_size_read() here, the i_size
@@ -1003,18 +995,20 @@ void ext4_show_inline_dir(struct inode *dir, struct buffer_head *bh,
  * and -EEXIST if directory entry already exists.
  */
 static int ext4_add_dirent_to_inline(handle_t *handle,
-				     struct ext4_filename *fname,
 				     struct dentry *dentry,
 				     struct inode *inode,
 				     struct ext4_iloc *iloc,
 				     void *inline_start, int inline_size)
 {
 	struct inode	*dir = d_inode(dentry->d_parent);
+	const char	*name = dentry->d_name.name;
+	int		namelen = dentry->d_name.len;
 	int		err;
 	struct ext4_dir_entry_2 *de;
 
-	err = ext4_find_dest_de(dir, inode, iloc->bh, inline_start,
-				inline_size, fname, &de);
+	err = ext4_find_dest_de(dir, inode, iloc->bh,
+				inline_start, inline_size,
+				name, namelen, &de);
 	if (err)
 		return err;
 
@@ -1022,7 +1016,8 @@ static int ext4_add_dirent_to_inline(handle_t *handle,
 	err = ext4_journal_get_write_access(handle, iloc->bh);
 	if (err)
 		return err;
-	ext4_insert_dentry(dir, inode, de, inline_size, fname);
+	ext4_insert_dentry(dir, inode, de, inline_size, &dentry->d_name,
+			   name, namelen);
 
 	ext4_show_inline_dir(dir, iloc->bh, inline_start, inline_size);
 
@@ -1158,9 +1153,10 @@ static int ext4_finish_convert_inline_dir(handle_t *handle,
 	set_buffer_uptodate(dir_block);
 	err = ext4_handle_dirty_dirent_node(handle, inode, dir_block);
 	if (err)
-		return err;
+		goto out;
 	set_buffer_verified(dir_block);
-	return ext4_mark_inode_dirty(handle, inode);
+out:
+	return err;
 }
 
 static int ext4_convert_inline_data_nolock(handle_t *handle,
@@ -1252,8 +1248,8 @@ out:
  * If succeeds, return 0. If not, extended the inline dir and copied data to
  * the new created block.
  */
-int ext4_try_add_inline_entry(handle_t *handle, struct ext4_filename *fname,
-			      struct dentry *dentry, struct inode *inode)
+int ext4_try_add_inline_entry(handle_t *handle, struct dentry *dentry,
+			      struct inode *inode)
 {
 	int ret, inline_size;
 	void *inline_start;
@@ -1272,7 +1268,7 @@ int ext4_try_add_inline_entry(handle_t *handle, struct ext4_filename *fname,
 						 EXT4_INLINE_DOTDOT_SIZE;
 	inline_size = EXT4_MIN_INLINE_DATA_SIZE - EXT4_INLINE_DOTDOT_SIZE;
 
-	ret = ext4_add_dirent_to_inline(handle, fname, dentry, inode, &iloc,
+	ret = ext4_add_dirent_to_inline(handle, dentry, inode, &iloc,
 					inline_start, inline_size);
 	if (ret != -ENOSPC)
 		goto out;
@@ -1293,9 +1289,8 @@ int ext4_try_add_inline_entry(handle_t *handle, struct ext4_filename *fname,
 	if (inline_size) {
 		inline_start = ext4_get_inline_xattr_pos(dir, &iloc);
 
-		ret = ext4_add_dirent_to_inline(handle, fname, dentry,
-						inode, &iloc, inline_start,
-						inline_size);
+		ret = ext4_add_dirent_to_inline(handle, dentry, inode, &iloc,
+						inline_start, inline_size);
 
 		if (ret != -ENOSPC)
 			goto out;
@@ -1616,7 +1611,6 @@ out:
 }
 
 struct buffer_head *ext4_find_inline_entry(struct inode *dir,
-					struct ext4_filename *fname,
 					const struct qstr *d_name,
 					struct ext4_dir_entry_2 **res_dir,
 					int *has_inline_data)
@@ -1638,8 +1632,8 @@ struct buffer_head *ext4_find_inline_entry(struct inode *dir,
 	inline_start = (void *)ext4_raw_inode(&iloc)->i_block +
 						EXT4_INLINE_DOTDOT_SIZE;
 	inline_size = EXT4_MIN_INLINE_DATA_SIZE - EXT4_INLINE_DOTDOT_SIZE;
-	ret = ext4_search_dir(iloc.bh, inline_start, inline_size,
-			      dir, fname, d_name, 0, res_dir);
+	ret = search_dir(iloc.bh, inline_start, inline_size,
+			 dir, d_name, 0, res_dir);
 	if (ret == 1)
 		goto out_find;
 	if (ret < 0)
@@ -1651,8 +1645,8 @@ struct buffer_head *ext4_find_inline_entry(struct inode *dir,
 	inline_start = ext4_get_inline_xattr_pos(dir, &iloc);
 	inline_size = ext4_get_inline_size(dir) - EXT4_MIN_INLINE_DATA_SIZE;
 
-	ret = ext4_search_dir(iloc.bh, inline_start, inline_size,
-			      dir, fname, d_name, 0, res_dir);
+	ret = search_dir(iloc.bh, inline_start, inline_size,
+			 dir, d_name, 0, res_dir);
 	if (ret == 1)
 		goto out_find;
 

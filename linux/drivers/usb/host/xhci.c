@@ -680,23 +680,20 @@ void xhci_stop(struct usb_hcd *hcd)
 	u32 temp;
 	struct xhci_hcd *xhci = hcd_to_xhci(hcd);
 
-	mutex_lock(&xhci->mutex);
-
-	if (!(xhci->xhc_state & XHCI_STATE_HALTED)) {
-		spin_lock_irq(&xhci->lock);
-
-		xhci->xhc_state |= XHCI_STATE_HALTED;
-		xhci->cmd_ring_state = CMD_RING_STATE_STOPPED;
-		xhci_halt(xhci);
-		xhci_reset(xhci);
-
-		spin_unlock_irq(&xhci->lock);
-	}
-
-	if (!usb_hcd_is_primary_hcd(hcd)) {
-		mutex_unlock(&xhci->mutex);
+	if (xhci->xhc_state & XHCI_STATE_HALTED)
 		return;
-	}
+
+	mutex_lock(&xhci->mutex);
+	spin_lock_irq(&xhci->lock);
+	xhci->xhc_state |= XHCI_STATE_HALTED;
+	xhci->cmd_ring_state = CMD_RING_STATE_STOPPED;
+
+	/* Make sure the xHC is halted for a USB3 roothub
+	 * (xhci_stop() could be called as part of failed init).
+	 */
+	xhci_halt(xhci);
+	xhci_reset(xhci);
+	spin_unlock_irq(&xhci->lock);
 
 	xhci_cleanup_msix(xhci);
 
@@ -1569,6 +1566,19 @@ int xhci_urb_dequeue(struct usb_hcd *hcd, struct urb *urb, int status)
 		xhci_urb_free_priv(urb_priv);
 		return ret;
 	}
+	if ((xhci->xhc_state & XHCI_STATE_DYING) ||
+			(xhci->xhc_state & XHCI_STATE_HALTED)) {
+		xhci_dbg_trace(xhci, trace_xhci_dbg_cancel_urb,
+				"Ep 0x%x: URB %p to be canceled on "
+				"non-responsive xHCI host.",
+				urb->ep->desc.bEndpointAddress, urb);
+		/* Let the stop endpoint command watchdog timer (which set this
+		 * state) finish cleaning up the endpoint TD lists.  We must
+		 * have caught it in the middle of dropping a lock and giving
+		 * back an URB.
+		 */
+		goto done;
+	}
 
 	ep_index = xhci_get_endpoint_index(&urb->ep->desc);
 	ep = &xhci->devs[urb->dev->slot_id]->eps[ep_index];
@@ -2060,7 +2070,6 @@ static unsigned int xhci_get_block_size(struct usb_device *udev)
 	case USB_SPEED_HIGH:
 		return HS_BLOCK;
 	case USB_SPEED_SUPER:
-	case USB_SPEED_SUPER_PLUS:
 		return SS_BLOCK;
 	case USB_SPEED_UNKNOWN:
 	case USB_SPEED_WIRELESS:
@@ -2186,7 +2195,7 @@ static int xhci_check_bw_table(struct xhci_hcd *xhci,
 	unsigned int packets_remaining = 0;
 	unsigned int i;
 
-	if (virt_dev->udev->speed >= USB_SPEED_SUPER)
+	if (virt_dev->udev->speed == USB_SPEED_SUPER)
 		return xhci_check_ss_bw(xhci, virt_dev);
 
 	if (virt_dev->udev->speed == USB_SPEED_HIGH) {
@@ -2387,7 +2396,7 @@ void xhci_drop_ep_from_interval_table(struct xhci_hcd *xhci,
 	if (xhci_is_async_ep(ep_bw->type))
 		return;
 
-	if (udev->speed >= USB_SPEED_SUPER) {
+	if (udev->speed == USB_SPEED_SUPER) {
 		if (xhci_is_sync_in_ep(ep_bw->type))
 			xhci->devs[udev->slot_id]->bw_table->ss_bw_in -=
 				xhci_get_ss_bw_consumed(ep_bw);
@@ -2425,7 +2434,6 @@ void xhci_drop_ep_from_interval_table(struct xhci_hcd *xhci,
 		interval_bw->overhead[HS_OVERHEAD_TYPE] -= 1;
 		break;
 	case USB_SPEED_SUPER:
-	case USB_SPEED_SUPER_PLUS:
 	case USB_SPEED_UNKNOWN:
 	case USB_SPEED_WIRELESS:
 		/* Should never happen because only LS/FS/HS endpoints will get
@@ -2485,7 +2493,6 @@ static void xhci_add_ep_to_interval_table(struct xhci_hcd *xhci,
 		interval_bw->overhead[HS_OVERHEAD_TYPE] += 1;
 		break;
 	case USB_SPEED_SUPER:
-	case USB_SPEED_SUPER_PLUS:
 	case USB_SPEED_UNKNOWN:
 	case USB_SPEED_WIRELESS:
 		/* Should never happen because only LS/FS/HS endpoints will get
@@ -3124,7 +3131,7 @@ static u32 xhci_calculate_no_streams_bitmask(struct xhci_hcd *xhci,
 }
 
 /*
- * The USB device drivers use this function (through the HCD interface in USB
+ * The USB device drivers use this function (though the HCD interface in USB
  * core) to prepare a set of bulk endpoints to use streams.  Streams are used to
  * coordinate mass storage command queueing across multiple endpoints (basically
  * a stream ID == a task ID).
@@ -3779,6 +3786,8 @@ disable_slot:
 /*
  * Issue an Address Device command and optionally send a corresponding
  * SetAddress request to the device.
+ * We should be protected by the usb_address0_mutex in hub_wq's hub_port_init,
+ * so we should only issue and wait on one address command at the same time.
  */
 static int xhci_setup_device(struct usb_hcd *hcd, struct usb_device *udev,
 			     enum xhci_setup_dev setup)
@@ -3795,10 +3804,8 @@ static int xhci_setup_device(struct usb_hcd *hcd, struct usb_device *udev,
 
 	mutex_lock(&xhci->mutex);
 
-	if (xhci->xhc_state) {	/* dying, removing or halted */
-		ret = -ESHUTDOWN;
+	if (xhci->xhc_state)	/* dying, removing or halted */
 		goto out;
-	}
 
 	if (!udev->slot_id) {
 		xhci_dbg_trace(xhci, trace_xhci_dbg_address,
@@ -3982,7 +3989,7 @@ int xhci_find_raw_port_number(struct usb_hcd *hcd, int port1)
 	__le32 __iomem *addr;
 	int raw_port;
 
-	if (hcd->speed < HCD_USB3)
+	if (hcd->speed != HCD_USB3)
 		addr = xhci->usb2_ports[port1 - 1];
 	else
 		addr = xhci->usb3_ports[port1 - 1];
@@ -4133,7 +4140,7 @@ int xhci_set_usb2_hardware_lpm(struct usb_hcd *hcd,
 	int		hird, exit_latency;
 	int		ret;
 
-	if (hcd->speed >= HCD_USB3 || !xhci->hw_lpm_support ||
+	if (hcd->speed == HCD_USB3 || !xhci->hw_lpm_support ||
 			!udev->lpm_capable)
 		return -EPERM;
 
@@ -4250,7 +4257,7 @@ int xhci_update_device(struct usb_hcd *hcd, struct usb_device *udev)
 	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
 	int		portnum = udev->portnum - 1;
 
-	if (hcd->speed >= HCD_USB3 || !xhci->sw_lpm_support ||
+	if (hcd->speed == HCD_USB3 || !xhci->sw_lpm_support ||
 			!udev->lpm_capable)
 		return 0;
 
@@ -4690,6 +4697,7 @@ int xhci_disable_usb3_lpm_timeout(struct usb_hcd *hcd,
 {
 	struct xhci_hcd	*xhci;
 	u16 mel;
+	int ret;
 
 	xhci = hcd_to_xhci(hcd);
 	if (!xhci || !(xhci->quirks & XHCI_LPM_SUPPORT) ||
@@ -4697,7 +4705,10 @@ int xhci_disable_usb3_lpm_timeout(struct usb_hcd *hcd,
 		return 0;
 
 	mel = calculate_max_exit_latency(udev, state, USB3_LPM_DISABLED);
-	return xhci_change_max_exit_latency(xhci, udev, mel);
+	ret = xhci_change_max_exit_latency(xhci, udev, mel);
+	if (ret)
+		return ret;
+	return 0;
 }
 #else /* CONFIG_PM */
 
@@ -4858,9 +4869,8 @@ int xhci_gen_setup(struct usb_hcd *hcd, xhci_get_quirks_t get_quirks)
 	/* XHCI controllers don't stop the ep queue on short packets :| */
 	hcd->self.no_stop_on_short = 1;
 
-	xhci = hcd_to_xhci(hcd);
-
 	if (usb_hcd_is_primary_hcd(hcd)) {
+		xhci = hcd_to_xhci(hcd);
 		xhci->main_hcd = hcd;
 		/* Mark the first roothub as being USB 2.0.
 		 * The xHCI driver will register the USB 3.0 roothub.
@@ -4874,10 +4884,6 @@ int xhci_gen_setup(struct usb_hcd *hcd, xhci_get_quirks_t get_quirks)
 		 */
 		hcd->has_tt = 1;
 	} else {
-		if (xhci->sbrn == 0x31) {
-			xhci_info(xhci, "Host supports USB 3.1 Enhanced SuperSpeed\n");
-			hcd->speed = HCD_USB31;
-		}
 		/* xHCI private pointer was set in xhci_pci_probe for the second
 		 * registered roothub.
 		 */
@@ -4897,8 +4903,6 @@ int xhci_gen_setup(struct usb_hcd *hcd, xhci_get_quirks_t get_quirks)
 	xhci->hcc_params = readl(&xhci->cap_regs->hc_capbase);
 	xhci->hci_version = HC_VERSION(xhci->hcc_params);
 	xhci->hcc_params = readl(&xhci->cap_regs->hcc_params);
-	if (xhci->hci_version > 0x100)
-		xhci->hcc_params2 = readl(&xhci->cap_regs->hcc_params2);
 	xhci_print_registers(xhci);
 
 	xhci->quirks |= quirks;
@@ -4924,22 +4928,22 @@ int xhci_gen_setup(struct usb_hcd *hcd, xhci_get_quirks_t get_quirks)
 		return retval;
 	xhci_dbg(xhci, "Reset complete\n");
 
+	/*
+	 * On some xHCI controllers (e.g. R-Car SoCs), the AC64 bit (bit 0)
+	 * of HCCPARAMS1 is set to 1. However, the xHCs don't support 64-bit
+	 * address memory pointers actually. So, this driver clears the AC64
+	 * bit of xhci->hcc_params to call dma_set_coherent_mask(dev,
+	 * DMA_BIT_MASK(32)) in this xhci_gen_setup().
+	 */
+	if (xhci->quirks & XHCI_NO_64BIT_SUPPORT)
+		xhci->hcc_params &= ~BIT(0);
+
 	/* Set dma_mask and coherent_dma_mask to 64-bits,
 	 * if xHC supports 64-bit addressing */
 	if (HCC_64BIT_ADDR(xhci->hcc_params) &&
 			!dma_set_mask(dev, DMA_BIT_MASK(64))) {
 		xhci_dbg(xhci, "Enabling 64-bit DMA addresses.\n");
 		dma_set_coherent_mask(dev, DMA_BIT_MASK(64));
-	} else {
-		/*
-		 * This is to avoid error in cases where a 32-bit USB
-		 * controller is used on a 64-bit capable system.
-		 */
-		retval = dma_set_mask(dev, DMA_BIT_MASK(32));
-		if (retval)
-			return retval;
-		xhci_dbg(xhci, "Enabling 32-bit DMA addresses.\n");
-		dma_set_coherent_mask(dev, DMA_BIT_MASK(32));
 	}
 
 	xhci_dbg(xhci, "Calling HCD init\n");
@@ -5054,7 +5058,7 @@ static int __init xhci_hcd_init(void)
 	BUILD_BUG_ON(sizeof(struct xhci_stream_ctx) != 4*32/8);
 	BUILD_BUG_ON(sizeof(union xhci_trb) != 4*32/8);
 	BUILD_BUG_ON(sizeof(struct xhci_erst_entry) != 4*32/8);
-	BUILD_BUG_ON(sizeof(struct xhci_cap_regs) != 8*32/8);
+	BUILD_BUG_ON(sizeof(struct xhci_cap_regs) != 7*32/8);
 	BUILD_BUG_ON(sizeof(struct xhci_intr_reg) != 8*32/8);
 	/* xhci_run_regs has eight fields and embeds 128 xhci_intr_regs */
 	BUILD_BUG_ON(sizeof(struct xhci_run_regs) != (8+8*128)*32/8);

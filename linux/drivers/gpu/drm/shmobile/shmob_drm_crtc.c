@@ -248,7 +248,7 @@ static void shmob_drm_crtc_start(struct shmob_drm_crtc *scrtc)
 	lcdc_write(sdev, LDDDSR, value);
 
 	/* Setup planes. */
-	drm_for_each_legacy_plane(plane, dev) {
+	drm_for_each_legacy_plane(plane, &dev->mode_config.plane_list) {
 		if (plane->crtc == crtc)
 			shmob_drm_plane_setup(plane);
 	}
@@ -738,6 +738,8 @@ int shmob_drm_connector_create(struct shmob_drm_device *sdev,
 	ret = drm_mode_connector_attach_encoder(connector, encoder);
 	if (ret < 0)
 		goto err_backlight;
+
+	connector->encoder = encoder;
 
 	drm_helper_connector_dpms(connector, DRM_MODE_DPMS_OFF);
 	drm_object_property_set_value(&connector->base,

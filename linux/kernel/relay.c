@@ -81,7 +81,10 @@ static struct page **relay_alloc_page_array(unsigned int n_pages)
  */
 static void relay_free_page_array(struct page **array)
 {
-	kvfree(array);
+	if (is_vmalloc_addr(array))
+		vfree(array);
+	else
+		kfree(array);
 }
 
 /**

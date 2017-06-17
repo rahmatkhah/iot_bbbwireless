@@ -202,6 +202,7 @@ static int snd_usb_create_stream(struct snd_usb_audio *chip, int ctrlif, int int
 	if (! snd_usb_parse_audio_interface(chip, interface)) {
 		usb_set_interface(dev, interface, 0); /* reset the current interface */
 		usb_driver_claim_interface(&usb_audio_driver, iface, (void *)-1L);
+		return -EINVAL;
 	}
 
 	return 0;
@@ -370,7 +371,7 @@ static int snd_usb_audio_create(struct usb_interface *intf,
 	chip->card = card;
 	chip->setup = device_setup[idx];
 	chip->autoclock = autoclock;
-	atomic_set(&chip->active, 1); /* avoid autopm during probing */
+	chip->probing = 1;
 	atomic_set(&chip->usage_count, 0);
 	atomic_set(&chip->shutdown, 0);
 
@@ -502,7 +503,7 @@ static int usb_audio_probe(struct usb_interface *intf,
 				goto __error;
 			}
 			chip = usb_chip[i];
-			atomic_inc(&chip->active); /* avoid autopm */
+			chip->probing = 1;
 			break;
 		}
 	}
@@ -562,8 +563,8 @@ static int usb_audio_probe(struct usb_interface *intf,
 
 	usb_chip[chip->index] = chip;
 	chip->num_interfaces++;
+	chip->probing = 0;
 	usb_set_intfdata(intf, chip);
-	atomic_dec(&chip->active);
 	mutex_unlock(&register_mutex);
 	return 0;
 
@@ -571,7 +572,7 @@ static int usb_audio_probe(struct usb_interface *intf,
 	if (chip) {
 		if (!chip->num_interfaces)
 			snd_card_free(chip->card);
-		atomic_dec(&chip->active);
+		chip->probing = 0;
 	}
 	mutex_unlock(&register_mutex);
 	return err;
@@ -667,6 +668,8 @@ int snd_usb_autoresume(struct snd_usb_audio *chip)
 {
 	if (atomic_read(&chip->shutdown))
 		return -EIO;
+	if (chip->probing)
+		return 0;
 	if (atomic_inc_return(&chip->active) == 1)
 		return usb_autopm_get_interface(chip->pm_intf);
 	return 0;
@@ -674,6 +677,8 @@ int snd_usb_autoresume(struct snd_usb_audio *chip)
 
 void snd_usb_autosuspend(struct snd_usb_audio *chip)
 {
+	if (chip->probing)
+		return;
 	if (atomic_read(&chip->shutdown))
 		return;
 	if (atomic_dec_and_test(&chip->active))
@@ -690,20 +695,30 @@ static int usb_audio_suspend(struct usb_interface *intf, pm_message_t message)
 	if (chip == (void *)-1L)
 		return 0;
 
-	chip->autosuspended = !!PMSG_IS_AUTO(message);
-	if (!chip->autosuspended)
+	if (!PMSG_IS_AUTO(message)) {
 		snd_power_change_state(chip->card, SNDRV_CTL_POWER_D3hot);
-	if (!chip->num_suspended_intf++) {
-		list_for_each_entry(as, &chip->pcm_list, list) {
-			snd_pcm_suspend_all(as->pcm);
-			as->substream[0].need_setup_ep =
-				as->substream[1].need_setup_ep = true;
+		if (!chip->num_suspended_intf++) {
+			list_for_each_entry(as, &chip->pcm_list, list) {
+				snd_pcm_suspend_all(as->pcm);
+				as->substream[0].need_setup_ep =
+					as->substream[1].need_setup_ep = true;
+			}
+			list_for_each(p, &chip->midi_list) {
+				snd_usbmidi_suspend(p);
+			}
 		}
-		list_for_each(p, &chip->midi_list)
-			snd_usbmidi_suspend(p);
+	} else {
+		/*
+		 * otherwise we keep the rest of the system in the dark
+		 * to keep this transparent
+		 */
+		if (!chip->num_suspended_intf++)
+			chip->autosuspended = 1;
+	}
+
+	if (chip->num_suspended_intf == 1)
 		list_for_each_entry(mixer, &chip->mixer_list, list)
 			snd_usb_mixer_suspend(mixer);
-	}
 
 	return 0;
 }

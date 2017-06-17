@@ -27,6 +27,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/i2c.h>
+#include <linux/i2c/i2c-rcar.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of_device.h>
@@ -102,7 +103,6 @@
 enum rcar_i2c_type {
 	I2C_RCAR_GEN1,
 	I2C_RCAR_GEN2,
-	I2C_RCAR_GEN3,
 };
 
 struct rcar_i2c_priv {
@@ -178,7 +178,6 @@ static int rcar_i2c_clock_calculate(struct rcar_i2c_priv *priv,
 		cdf_width = 2;
 		break;
 	case I2C_RCAR_GEN2:
-	case I2C_RCAR_GEN3:
 		cdf_width = 3;
 		break;
 	default:
@@ -491,8 +490,7 @@ static int rcar_i2c_master_xfer(struct i2c_adapter *adap,
 	struct rcar_i2c_priv *priv = i2c_get_adapdata(adap);
 	struct device *dev = rcar_i2c_priv_to_dev(priv);
 	unsigned long flags;
-	int i, ret;
-	long timeout;
+	int i, ret, timeout;
 
 	pm_runtime_get_sync(dev);
 
@@ -534,7 +532,7 @@ static int rcar_i2c_master_xfer(struct i2c_adapter *adap,
 
 		timeout = wait_event_timeout(priv->wait,
 					     rcar_i2c_flags_has(priv, ID_DONE),
-					     adap->timeout);
+					     5 * HZ);
 		if (!timeout) {
 			ret = -ETIMEDOUT;
 			break;
@@ -576,7 +574,7 @@ static int rcar_reg_slave(struct i2c_client *slave)
 	if (slave->flags & I2C_CLIENT_TEN)
 		return -EAFNOSUPPORT;
 
-	pm_runtime_get_sync(rcar_i2c_priv_to_dev(priv));
+	pm_runtime_forbid(rcar_i2c_priv_to_dev(priv));
 
 	priv->slave = slave;
 	rcar_i2c_write(priv, ICSAR, slave->addr);
@@ -598,7 +596,7 @@ static int rcar_unreg_slave(struct i2c_client *slave)
 
 	priv->slave = NULL;
 
-	pm_runtime_put(rcar_i2c_priv_to_dev(priv));
+	pm_runtime_allow(rcar_i2c_priv_to_dev(priv));
 
 	return 0;
 }
@@ -606,8 +604,7 @@ static int rcar_unreg_slave(struct i2c_client *slave)
 static u32 rcar_i2c_func(struct i2c_adapter *adap)
 {
 	/* This HW can't do SMBUS_QUICK and NOSTART */
-	return I2C_FUNC_I2C | I2C_FUNC_SLAVE |
-		(I2C_FUNC_SMBUS_EMUL & ~I2C_FUNC_SMBUS_QUICK);
+	return I2C_FUNC_I2C | (I2C_FUNC_SMBUS_EMUL & ~I2C_FUNC_SMBUS_QUICK);
 }
 
 static const struct i2c_algorithm rcar_i2c_algo = {
@@ -626,13 +623,13 @@ static const struct of_device_id rcar_i2c_dt_ids[] = {
 	{ .compatible = "renesas,i2c-r8a7792", .data = (void *)I2C_RCAR_GEN2 },
 	{ .compatible = "renesas,i2c-r8a7793", .data = (void *)I2C_RCAR_GEN2 },
 	{ .compatible = "renesas,i2c-r8a7794", .data = (void *)I2C_RCAR_GEN2 },
-	{ .compatible = "renesas,i2c-r8a7795", .data = (void *)I2C_RCAR_GEN3 },
 	{},
 };
 MODULE_DEVICE_TABLE(of, rcar_i2c_dt_ids);
 
 static int rcar_i2c_probe(struct platform_device *pdev)
 {
+	struct i2c_rcar_platform_data *pdata = dev_get_platdata(&pdev->dev);
 	struct rcar_i2c_priv *priv;
 	struct i2c_adapter *adap;
 	struct resource *res;
@@ -651,9 +648,15 @@ static int rcar_i2c_probe(struct platform_device *pdev)
 	}
 
 	bus_speed = 100000; /* default 100 kHz */
-	of_property_read_u32(dev->of_node, "clock-frequency", &bus_speed);
+	ret = of_property_read_u32(dev->of_node, "clock-frequency", &bus_speed);
+	if (ret < 0 && pdata && pdata->bus_speed)
+		bus_speed = pdata->bus_speed;
 
-	priv->devtype = (enum rcar_i2c_type)of_match_device(rcar_i2c_dt_ids, dev)->data;
+	if (pdev->dev.of_node)
+		priv->devtype = (long)of_match_device(rcar_i2c_dt_ids,
+						      dev)->data;
+	else
+		priv->devtype = platform_get_device_id(pdev)->driver_data;
 
 	ret = rcar_i2c_clock_calculate(priv, bus_speed, dev);
 	if (ret < 0)
@@ -711,6 +714,14 @@ static int rcar_i2c_remove(struct platform_device *pdev)
 	return 0;
 }
 
+static struct platform_device_id rcar_i2c_id_table[] = {
+	{ "i2c-rcar",		I2C_RCAR_GEN1 },
+	{ "i2c-rcar_gen1",	I2C_RCAR_GEN1 },
+	{ "i2c-rcar_gen2",	I2C_RCAR_GEN2 },
+	{},
+};
+MODULE_DEVICE_TABLE(platform, rcar_i2c_id_table);
+
 static struct platform_driver rcar_i2c_driver = {
 	.driver	= {
 		.name	= "i2c-rcar",
@@ -718,6 +729,7 @@ static struct platform_driver rcar_i2c_driver = {
 	},
 	.probe		= rcar_i2c_probe,
 	.remove		= rcar_i2c_remove,
+	.id_table	= rcar_i2c_id_table,
 };
 
 module_platform_driver(rcar_i2c_driver);

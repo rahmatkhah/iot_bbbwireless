@@ -21,13 +21,12 @@
 #include <linux/init.h>
 #include <linux/linkage.h>
 
-#include <asm/alternative.h>
+#include <asm/alternative-asm.h>
 #include <asm/assembler.h>
 #include <asm/asm-offsets.h>
 #include <asm/cpufeature.h>
 #include <asm/errno.h>
 #include <asm/esr.h>
-#include <asm/memory.h>
 #include <asm/thread_info.h>
 #include <asm/unistd.h>
 
@@ -94,13 +93,7 @@
 	disable_step_tsk x19, x20		// exceptions when scheduling.
 	.else
 	add	x21, sp, #S_FRAME_SIZE
-	get_thread_info tsk
-	/* Save the task's original addr_limit and set USER_DS (TASK_SIZE_64) */
-	ldr	x20, [tsk, #TI_ADDR_LIMIT]
-	str	x20, [sp, #S_ORIG_ADDR_LIMIT]
-	mov	x20, #TASK_SIZE_64
-	str	x20, [tsk, #TI_ADDR_LIMIT]
-	.endif /* \el == 0 */
+	.endif
 	mrs	x22, elr_el1
 	mrs	x23, spsr_el1
 	stp	lr, x21, [sp, #S_LR]
@@ -123,40 +116,38 @@
 	*/
 	.endm
 
-	.macro	kernel_exit, el
-	.if	\el != 0
-	/* Restore the task's original addr_limit. */
-	ldr	x20, [sp, #S_ORIG_ADDR_LIMIT]
-	str	x20, [tsk, #TI_ADDR_LIMIT]
-	.endif
-
+	.macro	kernel_exit, el, ret = 0
 	ldp	x21, x22, [sp, #S_PC]		// load ELR, SPSR
 	.if	\el == 0
 	ct_user_enter
 	ldr	x23, [sp, #S_SP]		// load return stack pointer
 	msr	sp_el0, x23
+
 #ifdef CONFIG_ARM64_ERRATUM_845719
-alternative_if_not ARM64_WORKAROUND_845719
-	nop
-	nop
+	alternative_insn						\
+	"nop",								\
+	"tbz x22, #4, 1f",						\
+	ARM64_WORKAROUND_845719
 #ifdef CONFIG_PID_IN_CONTEXTIDR
-	nop
-#endif
-alternative_else
-	tbz	x22, #4, 1f
-#ifdef CONFIG_PID_IN_CONTEXTIDR
-	mrs	x29, contextidr_el1
-	msr	contextidr_el1, x29
+	alternative_insn						\
+	"nop; nop",							\
+	"mrs x29, contextidr_el1; msr contextidr_el1, x29; 1:",		\
+	ARM64_WORKAROUND_845719
 #else
-	msr contextidr_el1, xzr
+	alternative_insn						\
+	"nop",								\
+	"msr contextidr_el1, xzr; 1:",					\
+	ARM64_WORKAROUND_845719
 #endif
-1:
-alternative_endif
 #endif
 	.endif
 	msr	elr_el1, x21			// set up the return data
 	msr	spsr_el1, x22
+	.if	\ret
+	ldr	x1, [sp, #S_X1]			// preserve x0 (syscall return)
+	.else
 	ldp	x0, x1, [sp, #16 * 0]
+	.endif
 	ldp	x2, x3, [sp, #16 * 1]
 	ldp	x4, x5, [sp, #16 * 2]
 	ldp	x6, x7, [sp, #16 * 3]
@@ -358,8 +349,8 @@ el1_inv:
 	// TODO: add support for undefined instructions in kernel mode
 	enable_dbg
 	mov	x0, sp
-	mov	x2, x1
 	mov	x1, #BAD_SYNC
+	mrs	x2, esr_el1
 	b	bad_mode
 ENDPROC(el1_sync)
 
@@ -449,8 +440,6 @@ el0_sync_compat:
 	b.eq	el0_fpsimd_acc
 	cmp	x24, #ESR_ELx_EC_FP_EXC32	// FP/ASIMD exception
 	b.eq	el0_fpsimd_exc
-	cmp	x24, #ESR_ELx_EC_PC_ALIGN	// pc alignment exception
-	b.eq	el0_sp_pc
 	cmp	x24, #ESR_ELx_EC_UNKNOWN	// unknown exception in EL0
 	b.eq	el0_undef
 	cmp	x24, #ESR_ELx_EC_CP15_32	// CP15 MRC/MCR trap
@@ -567,8 +556,8 @@ el0_inv:
 	ct_user_exit
 	mov	x0, sp
 	mov	x1, #BAD_SYNC
-	mov	x2, x25
-	bl	bad_el0_sync
+	mrs	x2, esr_el1
+	bl	bad_mode
 	b	ret_to_user
 ENDPROC(el0_sync)
 
@@ -599,8 +588,7 @@ ENDPROC(el0_irq)
  *
  */
 ENTRY(cpu_switch_to)
-	mov	x10, #THREAD_CPU_CONTEXT
-	add	x8, x0, x10
+	add	x8, x0, #THREAD_CPU_CONTEXT
 	mov	x9, sp
 	stp	x19, x20, [x8], #16		// store callee-saved registers
 	stp	x21, x22, [x8], #16
@@ -609,7 +597,7 @@ ENTRY(cpu_switch_to)
 	stp	x27, x28, [x8], #16
 	stp	x29, x9, [x8], #16
 	str	lr, [x8]
-	add	x8, x1, x10
+	add	x8, x1, #THREAD_CPU_CONTEXT
 	ldp	x19, x20, [x8], #16		// restore callee-saved registers
 	ldp	x21, x22, [x8], #16
 	ldp	x23, x24, [x8], #16
@@ -627,21 +615,17 @@ ENDPROC(cpu_switch_to)
  */
 ret_fast_syscall:
 	disable_irq				// disable interrupts
-	str	x0, [sp, #S_X0]			// returned x0
-	ldr	x1, [tsk, #TI_FLAGS]		// re-check for syscall tracing
-	and	x2, x1, #_TIF_SYSCALL_WORK
-	cbnz	x2, ret_fast_syscall_trace
+	ldr	x1, [tsk, #TI_FLAGS]
 	and	x2, x1, #_TIF_WORK_MASK
-	cbnz	x2, work_pending
+	cbnz	x2, fast_work_pending
 	enable_step_tsk x1, x2
-	kernel_exit 0
-ret_fast_syscall_trace:
-	enable_irq				// enable interrupts
-	b	__sys_trace_return_skipped	// we already saved x0
+	kernel_exit 0, ret = 1
 
 /*
  * Ok, we need to do extra processing, enter the slow path.
  */
+fast_work_pending:
+	str	x0, [sp, #S_X0]			// returned x0
 work_pending:
 	tbnz	x1, #TIF_NEED_RESCHED, work_resched
 	tbnz	x1, #TIF_NEED_RESCHED_LAZY, work_resched
@@ -666,7 +650,7 @@ ret_to_user:
 	cbnz	x2, work_pending
 	enable_step_tsk x1, x2
 no_work_pending:
-	kernel_exit 0
+	kernel_exit 0, ret = 0
 ENDPROC(ret_to_user)
 
 /*

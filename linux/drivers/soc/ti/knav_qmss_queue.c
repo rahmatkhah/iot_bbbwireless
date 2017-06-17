@@ -16,17 +16,26 @@
  * General Public License for more details.
  */
 
-#include <linux/debugfs.h>
-#include <linux/dma-mapping.h>
-#include <linux/firmware.h>
-#include <linux/interrupt.h>
-#include <linux/io.h>
+#include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
-#include <linux/of_irq.h>
-#include <linux/pm_runtime.h>
+#include <linux/device.h>
+#include <linux/clk.h>
+#include <linux/io.h>
+#include <linux/interrupt.h>
+#include <linux/bitops.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
+#include <linux/platform_device.h>
+#include <linux/dma-mapping.h>
+#include <linux/of.h>
+#include <linux/of_irq.h>
+#include <linux/of_device.h>
+#include <linux/of_address.h>
+#include <linux/pm_runtime.h>
+#include <linux/firmware.h>
+#include <linux/debugfs.h>
+#include <linux/seq_file.h>
+#include <linux/string.h>
 #include <linux/soc/ti/knav_qmss.h>
 
 #include "knav_qmss.h"
@@ -1183,16 +1192,11 @@ static int knav_queue_setup_link_ram(struct knav_device *kdev)
 		dev_dbg(kdev->dev, "linkram0: phys:%x, virt:%p, size:%x\n",
 			block->phys, block->virt, block->size);
 		writel_relaxed(block->phys, &qmgr->reg_config->link_ram_base0);
-		if (kdev->version == QMSS_LITE)
-			writel_relaxed(block->size,
-				       &qmgr->reg_config->link_ram_size0);
-		else
-			writel_relaxed(block->size - 1,
-				       &qmgr->reg_config->link_ram_size0);
+		writel_relaxed(block->size, &qmgr->reg_config->link_ram_size0);
 
 		block++;
 		if (!block->size)
-			continue;
+			return 0;
 
 		dev_dbg(kdev->dev, "linkram1: phys:%x, virt:%p, size:%x\n",
 			block->phys, block->virt, block->size);
@@ -1241,7 +1245,7 @@ static int knav_setup_queue_range(struct knav_device *kdev,
 
 		range->num_irqs++;
 
-		if (IS_ENABLED(CONFIG_SMP) && oirq.args_count == 3)
+		if (oirq.args_count == 3)
 			range->irqs[i].cpu_map =
 				(oirq.args[2] & 0x0000ff00) >> 8;
 	}
@@ -1410,37 +1414,38 @@ static int knav_queue_init_qmgrs(struct knav_device *kdev,
 		if (kdev->version == QMSS) {
 			qmgr->reg_status =
 				knav_queue_map_reg(kdev, child,
-						   KNAV_QUEUE_STATUS_REG_INDEX);
+					   KNAV_QUEUE_STATUS_REG_INDEX);
 		}
 
 		qmgr->reg_config =
 			knav_queue_map_reg(kdev, child,
-					   (kdev->version == QMSS_LITE) ?
-					   KNAV_L_QUEUE_CONFIG_REG_INDEX :
-					   KNAV_QUEUE_CONFIG_REG_INDEX);
+			   (kdev->version == QMSS_LITE) ?
+				 KNAV_L_QUEUE_CONFIG_REG_INDEX :
+				 KNAV_QUEUE_CONFIG_REG_INDEX);
 		qmgr->reg_region =
 			knav_queue_map_reg(kdev, child,
-					   (kdev->version == QMSS_LITE) ?
-					   KNAV_L_QUEUE_REGION_REG_INDEX :
-					   KNAV_QUEUE_REGION_REG_INDEX);
+			   (kdev->version == QMSS_LITE) ?
+				   KNAV_L_QUEUE_REGION_REG_INDEX :
+				   KNAV_QUEUE_REGION_REG_INDEX);
 
 		qmgr->reg_push =
 			knav_queue_map_reg(kdev, child,
-					   (kdev->version == QMSS_LITE) ?
-					    KNAV_L_QUEUE_PUSH_REG_INDEX :
-					    KNAV_QUEUE_PUSH_REG_INDEX);
+			   (kdev->version == QMSS_LITE) ?
+				   KNAV_L_QUEUE_PUSH_REG_INDEX :
+				   KNAV_QUEUE_PUSH_REG_INDEX);
 
 		if (kdev->version == QMSS) {
 			qmgr->reg_pop =
 				knav_queue_map_reg(kdev, child,
-						   KNAV_QUEUE_POP_REG_INDEX);
+					   KNAV_QUEUE_POP_REG_INDEX);
+
 		}
 
 		if (IS_ERR(qmgr->reg_peek) ||
-		    ((kdev->version == QMSS) &&
-		    (IS_ERR(qmgr->reg_status) || IS_ERR(qmgr->reg_pop))) ||
-		    IS_ERR(qmgr->reg_config) || IS_ERR(qmgr->reg_region) ||
-		    IS_ERR(qmgr->reg_push)) {
+		   ((kdev->version == QMSS) &&
+		   (IS_ERR(qmgr->reg_status) || IS_ERR(qmgr->reg_pop))) ||
+		   IS_ERR(qmgr->reg_config) || IS_ERR(qmgr->reg_region) ||
+		   IS_ERR(qmgr->reg_push)) {
 			dev_err(dev, "failed to map qmgr regs\n");
 			if (kdev->version == QMSS) {
 				if (!IS_ERR(qmgr->reg_status))

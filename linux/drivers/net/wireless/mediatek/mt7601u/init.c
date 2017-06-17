@@ -454,10 +454,8 @@ struct mt7601u_dev *mt7601u_alloc_device(struct device *pdev)
 	spin_lock_init(&dev->tx_lock);
 	spin_lock_init(&dev->rx_lock);
 	spin_lock_init(&dev->lock);
-	spin_lock_init(&dev->mac_lock);
 	spin_lock_init(&dev->con_mon_lock);
 	atomic_set(&dev->avg_ampdu_len, 1);
-	skb_queue_head_init(&dev->tx_skb_done);
 
 	dev->stat_wq = alloc_workqueue("mt7601u", WQ_UNBOUND, 0);
 	if (!dev->stat_wq) {
@@ -596,11 +594,11 @@ int mt7601u_register_device(struct mt7601u_dev *dev)
 	SET_IEEE80211_DEV(hw, dev->dev);
 
 	hw->queues = 4;
-	ieee80211_hw_set(hw, SIGNAL_DBM);
-	ieee80211_hw_set(hw, PS_NULLFUNC_STACK);
-	ieee80211_hw_set(hw, SUPPORTS_HT_CCK_RATES);
-	ieee80211_hw_set(hw, AMPDU_AGGREGATION);
-	ieee80211_hw_set(hw, SUPPORTS_RC_TABLE);
+	hw->flags = IEEE80211_HW_SIGNAL_DBM |
+		    IEEE80211_HW_PS_NULLFUNC_STACK |
+		    IEEE80211_HW_SUPPORTS_HT_CCK_RATES |
+		    IEEE80211_HW_AMPDU_AGGREGATION |
+		    IEEE80211_HW_SUPPORTS_RC_TABLE;
 	hw->max_rates = 1;
 	hw->max_report_rates = 7;
 	hw->max_rate_tries = 1;

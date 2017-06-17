@@ -16,12 +16,21 @@
  * General Public License for more details.
  */
 
-#include <linux/dma-mapping.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/device.h>
 #include <linux/io.h>
 #include <linux/interrupt.h>
-#include <linux/module.h>
-#include <linux/of_address.h>
+#include <linux/bitops.h>
+#include <linux/slab.h>
+#include <linux/spinlock.h>
 #include <linux/soc/ti/knav_qmss.h>
+#include <linux/platform_device.h>
+#include <linux/dma-mapping.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/of_address.h>
+#include <linux/firmware.h>
 
 #include "knav_qmss.h"
 
@@ -252,10 +261,6 @@ static int knav_range_setup_acc_irq(struct knav_range_info *range,
 	if (old && !new) {
 		dev_dbg(kdev->dev, "setup-acc-irq: freeing %s for channel %s\n",
 			acc->name, acc->name);
-		ret = irq_set_affinity_hint(irq, NULL);
-		if (ret)
-			dev_warn(range->kdev->dev,
-				 "Failed to set IRQ affinity\n");
 		free_irq(irq, range);
 	}
 

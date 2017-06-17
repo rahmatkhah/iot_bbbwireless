@@ -18,6 +18,8 @@
 
 #define _calc_walked(inout) (dd->inout##_walk.offset - dd->inout##_sg->offset)
 
+/* OMAP TRM gives bitfields as start:end, where start is the higher bit
+   number. For example 7:0 */
 #define FLD_MASK(start, end)	(((1 << ((start) - (end) + 1)) - 1) << (end))
 #define FLD_VAL(val, start, end) (((val) << (end)) & FLD_MASK(start, end))
 
@@ -69,9 +71,9 @@
 #define FLAGS_MODE_MASK		0x001f
 #define FLAGS_ENCRYPT		BIT(0)
 #define FLAGS_CBC		BIT(1)
-#define FLAGS_CTR		BIT(2)
-#define FLAGS_GCM		BIT(3)
-#define FLAGS_RFC4106_GCM	BIT(4)
+#define FLAGS_GIV		BIT(2)
+#define FLAGS_CTR		BIT(3)
+#define FLAGS_GCM		BIT(4)
 
 #define FLAGS_INIT		BIT(5)
 #define FLAGS_FAST		BIT(6)
@@ -83,25 +85,24 @@
 
 #define AES_BLOCK_WORDS		(AES_BLOCK_SIZE >> 2)
 
-struct omap_aes_gcm_result {
+struct tcrypt_result {
 	struct completion completion;
 	int err;
 };
 
 struct omap_aes_ctx {
+	struct omap_aes_dev *dd;
+
 	int		keylen;
 	u32		key[AES_KEYSIZE_256 / sizeof(u32)];
-	u8		nonce[4];
+	u32		auth_tag[AES_BLOCK_SIZE / sizeof(u32)];
+	u8		iv[AES_BLOCK_SIZE];
 	unsigned long	flags;
-	struct crypto_skcipher *ctr;
 	struct crypto_ablkcipher	*fallback;
 };
 
 struct omap_aes_reqctx {
-	struct omap_aes_dev *dd;
 	unsigned long mode;
-	u8 iv[AES_BLOCK_SIZE];
-	u32 auth_tag[AES_BLOCK_SIZE / sizeof(u32)];
 };
 
 #define OMAP_AES_QUEUE_LENGTH	10
@@ -113,16 +114,9 @@ struct omap_aes_algs_info {
 	unsigned int		registered;
 };
 
-struct omap_aes_aead_algs {
-	struct aead_alg	*algs_list;
-	unsigned int	size;
-	unsigned int	registered;
-};
-
 struct omap_aes_pdata {
 	struct omap_aes_algs_info	*algs_info;
 	unsigned int	algs_info_size;
-	struct omap_aes_aead_algs	*aead_algs_info;
 
 	void (*trigger)(struct omap_aes_dev *dd, int length);
 
@@ -157,7 +151,7 @@ struct omap_aes_dev {
 	/* Lock to acquire omap_aes_dd */
 	spinlock_t		lock;
 	struct crypto_queue	queue;
-	struct aead_queue	aead_queue;
+	struct crypto_queue	aead_queue;
 
 	struct tasklet_struct	done_task;
 	struct tasklet_struct	queue_task;
@@ -172,6 +166,7 @@ struct omap_aes_dev {
 	size_t				total;
 	size_t				total_save;
 	size_t				assoc_len;
+	size_t				assoc_len_save;
 	size_t				authsize;
 
 	struct scatterlist		*in_sg;
@@ -199,7 +194,7 @@ struct omap_aes_dev {
 
 u32 omap_aes_read(struct omap_aes_dev *dd, u32 offset);
 void omap_aes_write(struct omap_aes_dev *dd, u32 offset, u32 value);
-struct omap_aes_dev *omap_aes_find_dev(struct omap_aes_reqctx *rctx);
+struct omap_aes_dev *omap_aes_find_dev(struct omap_aes_ctx *ctx);
 int omap_aes_gcm_setkey(struct crypto_aead *tfm, const u8 *key,
 			unsigned int keylen);
 int omap_aes_4106gcm_setkey(struct crypto_aead *tfm, const u8 *key,
@@ -209,9 +204,9 @@ int omap_aes_gcm_decrypt(struct aead_request *req);
 int omap_aes_4106gcm_encrypt(struct aead_request *req);
 int omap_aes_4106gcm_decrypt(struct aead_request *req);
 int omap_aes_write_ctrl(struct omap_aes_dev *dd);
-bool omap_aes_copy_needed(struct scatterlist *sg, int total);
+int omap_aes_check_aligned(struct scatterlist *sg, int total);
 int omap_aes_crypt_dma_start(struct omap_aes_dev *dd);
-void omap_aes_gcm_dma_out_callback(void *data);
+void omap_aes_gcm_process_auth_tag(void *data);
 int omap_aes_crypt_dma_stop(struct omap_aes_dev *dd);
 
 #endif

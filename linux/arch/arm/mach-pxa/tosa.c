@@ -12,7 +12,6 @@
  *
  */
 
-#include <linux/clkdev.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
@@ -59,6 +58,7 @@
 #include <asm/mach/sharpsl_param.h>
 
 #include "generic.h"
+#include "clock.h"
 #include "devices.h"
 
 static unsigned long tosa_pin_config[] = {

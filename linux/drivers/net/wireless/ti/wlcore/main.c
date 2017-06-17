@@ -1,4 +1,3 @@
-
 /*
  * This file is part of wlcore
  *
@@ -3160,7 +3159,8 @@ static u64 wl1271_op_prepare_multicast(struct ieee80211_hw *hw,
 	return (u64)(unsigned long)fp;
 }
 
-#define WL1271_SUPPORTED_FILTERS (FIF_ALLMULTI | \
+#define WL1271_SUPPORTED_FILTERS (FIF_PROMISC_IN_BSS | \
+				  FIF_ALLMULTI | \
 				  FIF_FCSFAIL | \
 				  FIF_BCN_PRBRESP_PROMISC | \
 				  FIF_CONTROL | \
@@ -5255,7 +5255,7 @@ static int wl1271_op_ampdu_action(struct ieee80211_hw *hw,
 				  struct ieee80211_vif *vif,
 				  enum ieee80211_ampdu_mlme_action action,
 				  struct ieee80211_sta *sta, u16 tid, u16 *ssn,
-				  u8 buf_size, bool amsdu)
+				  u8 buf_size)
 {
 	struct wl1271 *wl = hw->priv;
 	struct wl12xx_vif *wlvif = wl12xx_vif_to_data(vif);
@@ -6102,19 +6102,18 @@ static int wl1271_init_ieee80211(struct wl1271 *wl)
 	/* FIXME: find a proper value */
 	wl->hw->max_listen_interval = wl->conf.conn.max_listen_interval;
 
-	ieee80211_hw_set(wl->hw, SUPPORT_FAST_XMIT);
-	ieee80211_hw_set(wl->hw, CHANCTX_STA_CSA);
-	ieee80211_hw_set(wl->hw, QUEUE_CONTROL);
-	ieee80211_hw_set(wl->hw, TX_AMPDU_SETUP_IN_HW);
-	ieee80211_hw_set(wl->hw, AMPDU_AGGREGATION);
-	ieee80211_hw_set(wl->hw, AP_LINK_PS);
-	ieee80211_hw_set(wl->hw, SPECTRUM_MGMT);
-	ieee80211_hw_set(wl->hw, REPORTS_TX_ACK_STATUS);
-	ieee80211_hw_set(wl->hw, CONNECTION_MONITOR);
-	ieee80211_hw_set(wl->hw, HAS_RATE_CONTROL);
-	ieee80211_hw_set(wl->hw, SUPPORTS_DYNAMIC_PS);
-	ieee80211_hw_set(wl->hw, SIGNAL_DBM);
-	ieee80211_hw_set(wl->hw, SUPPORTS_PS);
+	wl->hw->flags = IEEE80211_HW_SIGNAL_DBM |
+		IEEE80211_HW_SUPPORTS_PS |
+		IEEE80211_HW_SUPPORTS_DYNAMIC_PS |
+		IEEE80211_HW_HAS_RATE_CONTROL |
+		IEEE80211_HW_CONNECTION_MONITOR |
+		IEEE80211_HW_REPORTS_TX_ACK_STATUS |
+		IEEE80211_HW_SPECTRUM_MGMT |
+		IEEE80211_HW_AP_LINK_PS |
+		IEEE80211_HW_AMPDU_AGGREGATION |
+		IEEE80211_HW_TX_AMPDU_SETUP_IN_HW |
+		IEEE80211_HW_QUEUE_CONTROL |
+		IEEE80211_HW_CHANCTX_STA_CSA;
 
 	wl->hw->wiphy->cipher_suites = cipher_suites;
 	wl->hw->wiphy->n_cipher_suites = ARRAY_SIZE(cipher_suites);

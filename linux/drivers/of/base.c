@@ -27,7 +27,6 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/proc_fs.h>
-#include <linux/rhashtable.h>
 
 #include "of_private.h"
 
@@ -41,16 +40,6 @@ struct device_node *of_stdout;
 static const char *of_stdout_options;
 
 struct kset *of_kset;
-
-const struct rhashtable_params of_phandle_ht_params = {
-	.key_offset = offsetof(struct device_node, phandle), /* base offset */
-	.key_len = sizeof(phandle),
-	.head_offset = offsetof(struct device_node, ht_node),
-	.automatic_shrinking = true,
-};
-
-struct rhashtable of_phandle_ht;
-bool of_phandle_ht_initialized;
 
 /*
  * Used to protect the of_aliases, to hold off addition of nodes to sysfs.
@@ -123,7 +112,6 @@ static ssize_t of_node_property_read(struct file *filp, struct kobject *kobj,
 	return memory_read_from_buffer(buf, count, &offset, pp->value, pp->length);
 }
 
-/* always return newly allocated name, caller must free after use */
 static const char *safe_name(struct kobject *kobj, const char *orig_name)
 {
 	const char *name = orig_name;
@@ -138,12 +126,9 @@ static const char *safe_name(struct kobject *kobj, const char *orig_name)
 		name = kasprintf(GFP_KERNEL, "%s#%i", orig_name, ++i);
 	}
 
-	if (name == orig_name) {
-		name = kstrdup(orig_name, GFP_KERNEL);
-	} else {
+	if (name != orig_name)
 		pr_warn("device-tree: Duplicate name in %s, renamed to \"%s\"\n",
 			kobject_name(kobj), name);
-	}
 	return name;
 }
 
@@ -171,18 +156,11 @@ int __of_add_property_sysfs(struct device_node *np, struct property *pp)
 	return rc;
 }
 
-int __of_attach_node_post(struct device_node *np)
+int __of_attach_node_sysfs(struct device_node *np)
 {
 	const char *name;
-	struct kobject *parent;
 	struct property *pp;
 	int rc;
-
-	if (of_phandle_ht_available()) {
-		rc = of_phandle_ht_insert(np);
-		WARN(rc, "insert to phandle hash fail @%s\n",
-				of_node_full_name(np));
-	}
 
 	if (!IS_ENABLED(CONFIG_SYSFS))
 		return 0;
@@ -193,16 +171,15 @@ int __of_attach_node_post(struct device_node *np)
 	np->kobj.kset = of_kset;
 	if (!np->parent) {
 		/* Nodes without parents are new top level trees */
-		name = safe_name(&of_kset->kobj, "base");
-		parent = NULL;
+		rc = kobject_add(&np->kobj, NULL, "%s",
+				 safe_name(&of_kset->kobj, "base"));
 	} else {
 		name = safe_name(&np->parent->kobj, kbasename(np->full_name));
-		parent = &np->parent->kobj;
+		if (!name || !name[0])
+			return -EINVAL;
+
+		rc = kobject_add(&np->kobj, &np->parent->kobj, "%s", name);
 	}
-	if (!name)
-		return -ENOMEM;
-	rc = kobject_add(&np->kobj, parent, "%s", name);
-	kfree(name);
 	if (rc)
 		return rc;
 
@@ -217,13 +194,6 @@ void __init of_core_init(void)
 	struct device_node *np;
 	int ret;
 
-	ret = rhashtable_init(&of_phandle_ht, &of_phandle_ht_params);
-	if (ret) {
-		pr_warn("devicetree: Failed to initialize hashtable\n");
-		return;
-	}
-	of_phandle_ht_initialized = 1;
-
 	/* Create the kset, and register existing nodes */
 	mutex_lock(&of_mutex);
 	of_kset = kset_create_and_add("devicetree", NULL, firmware_kobj);
@@ -233,7 +203,7 @@ void __init of_core_init(void)
 		return;
 	}
 	for_each_of_allnodes(np)
-		__of_attach_node_post(np);
+		__of_attach_node_sysfs(np);
 	mutex_unlock(&of_mutex);
 
 	/* Symlink in /proc as required by userspace ABI */
@@ -243,6 +213,8 @@ void __init of_core_init(void)
 	ret = of_overlay_init();
 	if (ret != 0)
 		pr_warn("of_init: of_overlay_init failed!\n");
+
+	return 0;
 }
 
 static struct property *__of_find_property(const struct device_node *np,
@@ -410,7 +382,10 @@ bool __weak arch_find_n_match_cpu_physical_id(struct device_node *cpun,
 					   cpu, thread))
 		return true;
 
-	return __of_find_n_match_cpu_property(cpun, "reg", cpu, thread);
+	if (__of_find_n_match_cpu_property(cpun, "reg", cpu, thread))
+		return true;
+
+	return false;
 }
 
 /**
@@ -1103,14 +1078,9 @@ struct device_node *of_find_node_by_phandle(phandle handle)
 		return NULL;
 
 	raw_spin_lock_irqsave(&devtree_lock, flags);
-	/* when we're ready use the hash table */
-	if (of_phandle_ht_available() && !in_interrupt())
-		np = of_phandle_ht_lookup(handle);
-	else { /* fallback */
-		for_each_of_allnodes(np)
-			if (np->phandle == handle)
-				break;
-	}
+	for_each_of_allnodes(np)
+		if (np->phandle == handle)
+			break;
 	of_node_get(np);
 	raw_spin_unlock_irqrestore(&devtree_lock, flags);
 	return np;
@@ -1793,12 +1763,6 @@ int __of_remove_property(struct device_node *np, struct property *prop)
 	return 0;
 }
 
-void __of_sysfs_remove_bin_file(struct device_node *np, struct property *prop)
-{
-	sysfs_remove_bin_file(&np->kobj, &prop->attr);
-	kfree(prop->attr.attr.name);
-}
-
 void __of_remove_property_sysfs(struct device_node *np, struct property *prop)
 {
 	if (!IS_ENABLED(CONFIG_SYSFS))
@@ -1806,7 +1770,7 @@ void __of_remove_property_sysfs(struct device_node *np, struct property *prop)
 
 	/* at early boot, bail here and defer setup to of_init() */
 	if (of_kset && of_node_is_attached(np))
-		__of_sysfs_remove_bin_file(np, prop);
+		sysfs_remove_bin_file(&np->kobj, &prop->attr);
 }
 
 /**
@@ -1876,7 +1840,7 @@ void __of_update_property_sysfs(struct device_node *np, struct property *newprop
 		return;
 
 	if (oldprop)
-		__of_sysfs_remove_bin_file(np, oldprop);
+		sysfs_remove_bin_file(&np->kobj, &oldprop->attr);
 	__of_add_property_sysfs(np, newprop);
 }
 
@@ -2272,33 +2236,6 @@ struct device_node *of_graph_get_next_endpoint(const struct device_node *parent,
 	}
 }
 EXPORT_SYMBOL(of_graph_get_next_endpoint);
-
-/**
- * of_graph_get_endpoint_by_regs() - get endpoint node of specific identifiers
- * @parent: pointer to the parent device node
- * @port_reg: identifier (value of reg property) of the parent port node
- * @reg: identifier (value of reg property) of the endpoint node
- *
- * Return: An 'endpoint' node pointer which is identified by reg and at the same
- * is the child of a port node identified by port_reg. reg and port_reg are
- * ignored when they are -1.
- */
-struct device_node *of_graph_get_endpoint_by_regs(
-	const struct device_node *parent, int port_reg, int reg)
-{
-	struct of_endpoint endpoint;
-	struct device_node *node = NULL;
-
-	for_each_endpoint_of_node(parent, node) {
-		of_graph_parse_endpoint(node, &endpoint);
-		if (((port_reg == -1) || (endpoint.port == port_reg)) &&
-			((reg == -1) || (endpoint.id == reg)))
-			return node;
-	}
-
-	return NULL;
-}
-EXPORT_SYMBOL(of_graph_get_endpoint_by_regs);
 
 /**
  * of_graph_get_remote_port_parent() - get remote port's parent node

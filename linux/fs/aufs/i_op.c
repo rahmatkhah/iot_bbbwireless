@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2017 Junjiro R. Okajima
+ * Copyright (C) 2005-2016 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -21,12 +21,13 @@
 
 #include <linux/device_cgroup.h>
 #include <linux/fs_stack.h>
+#include <linux/mm.h>
 #include <linux/namei.h>
 #include <linux/security.h>
 #include "aufs.h"
 
 static int h_permission(struct inode *h_inode, int mask,
-			struct path *h_path, int brperm)
+			struct vfsmount *h_mnt, int brperm)
 {
 	int err;
 	const unsigned char write_mask = !!(mask & (MAY_WRITE | MAY_APPEND));
@@ -35,7 +36,7 @@ static int h_permission(struct inode *h_inode, int mask,
 	if ((write_mask && IS_IMMUTABLE(h_inode))
 	    || ((mask & MAY_EXEC)
 		&& S_ISREG(h_inode->i_mode)
-		&& (path_noexec(h_path)
+		&& ((h_mnt->mnt_flags & MNT_NOEXEC)
 		    || !(h_inode->i_mode & S_IXUGO))))
 		goto out;
 
@@ -120,7 +121,7 @@ static int aufs_permission(struct inode *inode, int mask)
 		err = 0;
 		bindex = au_ibtop(inode);
 		br = au_sbr(sb, bindex);
-		err = h_permission(h_inode, mask, &br->br_path, br->br_perm);
+		err = h_permission(h_inode, mask, au_br_mnt(br), br->br_perm);
 		if (write_mask
 		    && !err
 		    && !special_file(h_inode->i_mode)) {
@@ -146,7 +147,7 @@ static int aufs_permission(struct inode *inode, int mask)
 				break;
 
 			br = au_sbr(sb, bindex);
-			err = h_permission(h_inode, mask, &br->br_path,
+			err = h_permission(h_inode, mask, au_br_mnt(br),
 					   br->br_perm);
 		}
 	}
@@ -993,7 +994,7 @@ out_dentry:
 out_si:
 	si_read_unlock(sb);
 out_kfree:
-	kfree(a);
+	au_delayed_kfree(a);
 out:
 	AuTraceErr(err);
 	return err;
@@ -1085,7 +1086,7 @@ out_di:
 	di_write_unlock(dentry);
 	si_read_unlock(sb);
 out_kfree:
-	kfree(a);
+	au_delayed_kfree(a);
 out:
 	AuTraceErr(err);
 	return err;
@@ -1126,8 +1127,7 @@ static void au_refresh_iattr(struct inode *inode, struct kstat *st,
  * returns zero or negative (an error).
  * @dentry will be read-locked in success.
  */
-int au_h_path_getattr(struct dentry *dentry, int force, struct path *h_path,
-		      int locked)
+int au_h_path_getattr(struct dentry *dentry, int force, struct path *h_path)
 {
 	int err;
 	unsigned int mnt_flags, sigen;
@@ -1143,9 +1143,6 @@ int au_h_path_getattr(struct dentry *dentry, int force, struct path *h_path,
 	sb = dentry->d_sb;
 	mnt_flags = au_mntflags(sb);
 	udba_none = !!au_opt_test(mnt_flags, UDBA_NONE);
-
-	if (unlikely(locked))
-		goto body; /* skip locking dinfo */
 
 	/* support fstat(2) */
 	if (!d_unlinked(dentry) && !udba_none) {
@@ -1174,7 +1171,6 @@ int au_h_path_getattr(struct dentry *dentry, int force, struct path *h_path,
 	} else
 		di_read_lock_child(dentry, AuLock_IR);
 
-body:
 	inode = d_inode(dentry);
 	bindex = au_ibtop(inode);
 	h_path->mnt = au_sbr_mnt(sb, bindex);
@@ -1213,7 +1209,7 @@ static int aufs_getattr(struct vfsmount *mnt __maybe_unused,
 	err = si_read_lock(sb, AuLock_FLUSH | AuLock_NOPLM);
 	if (unlikely(err))
 		goto out;
-	err = au_h_path_getattr(dentry, /*force*/0, &h_path, /*locked*/0);
+	err = au_h_path_getattr(dentry, /*force*/0, &h_path);
 	if (unlikely(err))
 		goto out_si;
 	if (unlikely(!h_path.dentry))
@@ -1245,190 +1241,119 @@ out:
 
 /* ---------------------------------------------------------------------- */
 
-/*
- * Assumption:
- * - the number of symlinks is not so many.
- *
- * Structure:
- * - sbinfo (instead of iinfo) contains an hlist of struct au_symlink.
- *   If iinfo contained the hlist, then it would be rather large waste of memory
- *   I am afraid.
- * - struct au_symlink contains the necessary info for h_inode follow_link() and
- *   put_link().
- */
-
-struct au_symlink {
-	union {
-		struct hlist_node hlist;
-		struct rcu_head rcu;
-	};
-
-	struct inode *h_inode;
-	void *h_cookie;
-};
-
-static void au_symlink_add(struct super_block *sb, struct au_symlink *slink,
-			   struct inode *h_inode, void *cookie)
+static int h_readlink(struct dentry *dentry, int bindex, char __user *buf,
+		      int bufsiz)
 {
-	struct au_sbinfo *sbinfo;
-
-	ihold(h_inode);
-	slink->h_inode = h_inode;
-	slink->h_cookie = cookie;
-	sbinfo = au_sbi(sb);
-	au_sphl_add(&slink->hlist, &sbinfo->si_symlink);
-}
-
-static void au_symlink_del(struct super_block *sb, struct au_symlink *slink)
-{
-	struct au_sbinfo *sbinfo;
-
-	/* do not iput() within rcu */
-	iput(slink->h_inode);
-	slink->h_inode = NULL;
-	sbinfo = au_sbi(sb);
-	au_sphl_del_rcu(&slink->hlist, &sbinfo->si_symlink);
-	kfree_rcu(slink, rcu);
-}
-
-static const char *aufs_follow_link(struct dentry *dentry, void **cookie)
-{
-	const char *ret;
-	struct inode *inode, *h_inode;
-	struct dentry *h_dentry;
-	struct au_symlink *slink;
 	int err;
-	aufs_bindex_t bindex;
+	struct super_block *sb;
+	struct dentry *h_dentry;
+	struct inode *inode, *h_inode;
 
-	ret = NULL; /* suppress a warning */
-	err = aufs_read_lock(dentry, AuLock_IR | AuLock_GEN);
+	err = -EINVAL;
+	h_dentry = au_h_dptr(dentry, bindex);
+	h_inode = d_inode(h_dentry);
+	if (unlikely(!h_inode->i_op->readlink))
+		goto out;
+
+	err = security_inode_readlink(h_dentry);
 	if (unlikely(err))
 		goto out;
 
-	err = au_d_hashed_positive(dentry);
-	if (unlikely(err))
-		goto out_unlock;
-
-	err = -EINVAL;
+	sb = dentry->d_sb;
 	inode = d_inode(dentry);
-	bindex = au_ibtop(inode);
-	h_inode = au_h_iptr(inode, bindex);
-	if (unlikely(!h_inode->i_op->follow_link))
-		goto out_unlock;
-
-	err = -ENOMEM;
-	slink = kmalloc(sizeof(*slink), GFP_NOFS);
-	if (unlikely(!slink))
-		goto out_unlock;
-
-	err = -EBUSY;
-	h_dentry = NULL;
-	if (au_dbtop(dentry) <= bindex) {
-		h_dentry = au_h_dptr(dentry, bindex);
-		if (h_dentry)
-			dget(h_dentry);
+	if (!au_test_ro(sb, bindex, inode)) {
+		vfsub_touch_atime(au_sbr_mnt(sb, bindex), h_dentry);
+		fsstack_copy_attr_atime(inode, h_inode);
 	}
-	if (!h_dentry) {
-		h_dentry = d_find_any_alias(h_inode);
-		if (IS_ERR(h_dentry)) {
-			err = PTR_ERR(h_dentry);
-			goto out_free;
-		}
-	}
-	if (unlikely(!h_dentry))
-		goto out_free;
+	err = h_inode->i_op->readlink(h_dentry, buf, bufsiz);
 
-	err = 0;
-	AuDbg("%pf\n", h_inode->i_op->follow_link);
-	AuDbgDentry(h_dentry);
-	ret = h_inode->i_op->follow_link(h_dentry, cookie);
-	dput(h_dentry);
-
-	if (!IS_ERR_OR_NULL(ret)) {
-		au_symlink_add(inode->i_sb, slink, h_inode, *cookie);
-		*cookie = slink;
-		AuDbg("slink %p\n", slink);
-		goto out_unlock; /* success */
-	}
-
-out_free:
-	slink->h_inode = NULL;
-	kfree_rcu(slink, rcu);
-out_unlock:
-	aufs_read_unlock(dentry, AuLock_IR);
 out:
-	if (unlikely(err))
-		ret = ERR_PTR(err);
-	AuTraceErrPtr(ret);
-	return ret;
+	return err;
 }
 
-static void aufs_put_link(struct inode *inode, void *cookie)
+static int aufs_readlink(struct dentry *dentry, char __user *buf, int bufsiz)
 {
-	struct au_symlink *slink;
-	struct inode *h_inode;
+	int err;
 
-	slink = cookie;
-	AuDbg("slink %p\n", slink);
-	h_inode = slink->h_inode;
-	AuDbg("%pf\n", h_inode->i_op->put_link);
-	AuDbgInode(h_inode);
-	if (h_inode->i_op->put_link)
-		h_inode->i_op->put_link(h_inode, slink->h_cookie);
-	au_symlink_del(inode->i_sb, slink);
+	err = aufs_read_lock(dentry, AuLock_IR | AuLock_GEN);
+	if (unlikely(err))
+		goto out;
+	err = au_d_hashed_positive(dentry);
+	if (!err)
+		err = h_readlink(dentry, au_dbtop(dentry), buf, bufsiz);
+	aufs_read_unlock(dentry, AuLock_IR);
+
+out:
+	return err;
+}
+
+static void *aufs_follow_link(struct dentry *dentry, struct nameidata *nd)
+{
+	int err;
+	mm_segment_t old_fs;
+	union {
+		char *k;
+		char __user *u;
+	} buf;
+
+	err = -ENOMEM;
+	buf.k = (void *)__get_free_page(GFP_NOFS);
+	if (unlikely(!buf.k))
+		goto out;
+
+	err = aufs_read_lock(dentry, AuLock_IR | AuLock_GEN);
+	if (unlikely(err))
+		goto out_name;
+
+	err = au_d_hashed_positive(dentry);
+	if (!err) {
+		old_fs = get_fs();
+		set_fs(KERNEL_DS);
+		err = h_readlink(dentry, au_dbtop(dentry), buf.u, PATH_MAX);
+		set_fs(old_fs);
+	}
+	aufs_read_unlock(dentry, AuLock_IR);
+
+	if (err >= 0) {
+		buf.k[err] = 0;
+		/* will be freed by put_link */
+		nd_set_link(nd, buf.k);
+		return NULL; /* success */
+	}
+
+out_name:
+	au_delayed_free_page((unsigned long)buf.k);
+out:
+	AuTraceErr(err);
+	return ERR_PTR(err);
+}
+
+static void aufs_put_link(struct dentry *dentry __maybe_unused,
+			  struct nameidata *nd, void *cookie __maybe_unused)
+{
+	char *p;
+
+	p = nd_get_link(nd);
+	if (!IS_ERR_OR_NULL(p))
+		au_delayed_free_page((unsigned long)p);
 }
 
 /* ---------------------------------------------------------------------- */
 
-static int au_is_special(struct inode *inode)
-{
-	return (inode->i_mode & (S_IFBLK | S_IFCHR | S_IFIFO | S_IFSOCK));
-}
-
 static int aufs_update_time(struct inode *inode, struct timespec *ts, int flags)
 {
 	int err;
-	aufs_bindex_t bindex;
 	struct super_block *sb;
 	struct inode *h_inode;
-	struct vfsmount *h_mnt;
 
 	sb = inode->i_sb;
-	WARN_ONCE((flags & S_ATIME) && !IS_NOATIME(inode),
-		  "unexpected s_flags 0x%lx", sb->s_flags);
-
 	/* mmap_sem might be acquired already, cf. aufs_mmap() */
 	lockdep_off();
 	si_read_lock(sb, AuLock_FLUSH);
 	ii_write_lock_child(inode);
 	lockdep_on();
-
-	err = 0;
-	bindex = au_ibtop(inode);
-	h_inode = au_h_iptr(inode, bindex);
-	if (!au_test_ro(sb, bindex, inode)) {
-		h_mnt = au_sbr_mnt(sb, bindex);
-		err = vfsub_mnt_want_write(h_mnt);
-		if (!err) {
-			err = vfsub_update_time(h_inode, ts, flags);
-			vfsub_mnt_drop_write(h_mnt);
-		}
-	} else if (au_is_special(h_inode)) {
-		/*
-		 * Never copy-up here.
-		 * These special files may already be opened and used for
-		 * communicating. If we copied it up, then the communication
-		 * would be corrupted.
-		 */
-		AuWarn1("timestamps for i%lu are ignored "
-			"since it is on readonly branch (hi%lu).\n",
-			inode->i_ino, h_inode->i_ino);
-	} else if (flags & ~S_ATIME) {
-		err = -EIO;
-		AuIOErr1("unexpected flags 0x%x\n", flags);
-		AuDebugOn(1);
-	}
-
+	h_inode = au_h_iptr(inode, au_ibtop(inode));
+	err = vfsub_update_time(h_inode, ts, flags);
 	lockdep_off();
 	if (!err)
 		au_cpup_attr_timesizes(inode);
@@ -1464,7 +1389,7 @@ struct inode_operations aufs_iop_nogetattr[AuIop_Last],
 		.removexattr	= aufs_removexattr,
 #endif
 
-		.readlink	= generic_readlink,
+		.readlink	= aufs_readlink,
 		.follow_link	= aufs_follow_link,
 		.put_link	= aufs_put_link,
 

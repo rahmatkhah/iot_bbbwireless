@@ -1012,11 +1012,8 @@ area_found:
 		mutex_unlock(&pcpu_alloc_mutex);
 	}
 
-	if (chunk != pcpu_reserved_chunk) {
-		spin_lock_irqsave(&pcpu_lock, flags);
+	if (chunk != pcpu_reserved_chunk)
 		pcpu_nr_empty_pop_pages -= occ_pages;
-		spin_unlock_irqrestore(&pcpu_lock, flags);
-	}
 
 	if (pcpu_nr_empty_pop_pages < PCPU_EMPTY_POP_PAGES_LOW)
 		pcpu_schedule_balance_work();
@@ -1285,28 +1282,6 @@ void free_percpu(void __percpu *ptr)
 }
 EXPORT_SYMBOL_GPL(free_percpu);
 
-bool __is_kernel_percpu_address(unsigned long addr, unsigned long *can_addr)
-{
-#ifdef CONFIG_SMP
-	const size_t static_size = __per_cpu_end - __per_cpu_start;
-	void __percpu *base = __addr_to_pcpu_ptr(pcpu_base_addr);
-	unsigned int cpu;
-
-	for_each_possible_cpu(cpu) {
-		void *start = per_cpu_ptr(base, cpu);
-		void *va = (void *)addr;
-
-		if (va >= start && va < start + static_size) {
-			if (can_addr)
-				*can_addr = (unsigned long) (va - start);
-			return true;
-		}
-	}
-#endif
-	/* on UP, can't distinguish from other static vars, always false */
-	return false;
-}
-
 /**
  * is_kernel_percpu_address - test whether address is from static percpu area
  * @addr: address to test
@@ -1320,7 +1295,20 @@ bool __is_kernel_percpu_address(unsigned long addr, unsigned long *can_addr)
  */
 bool is_kernel_percpu_address(unsigned long addr)
 {
-	return __is_kernel_percpu_address(addr, NULL);
+#ifdef CONFIG_SMP
+	const size_t static_size = __per_cpu_end - __per_cpu_start;
+	void __percpu *base = __addr_to_pcpu_ptr(pcpu_base_addr);
+	unsigned int cpu;
+
+	for_each_possible_cpu(cpu) {
+		void *start = per_cpu_ptr(base, cpu);
+
+		if ((void *)addr >= start && (void *)addr < start + static_size)
+			return true;
+        }
+#endif
+	/* on UP, can't distinguish from other static vars, always false */
+	return false;
 }
 
 /**
@@ -1581,12 +1569,12 @@ int __init pcpu_setup_first_chunk(const struct pcpu_alloc_info *ai,
 	PCPU_SETUP_BUG_ON(ai->nr_groups <= 0);
 #ifdef CONFIG_SMP
 	PCPU_SETUP_BUG_ON(!ai->static_size);
-	PCPU_SETUP_BUG_ON(offset_in_page(__per_cpu_start));
+	PCPU_SETUP_BUG_ON((unsigned long)__per_cpu_start & ~PAGE_MASK);
 #endif
 	PCPU_SETUP_BUG_ON(!base_addr);
-	PCPU_SETUP_BUG_ON(offset_in_page(base_addr));
+	PCPU_SETUP_BUG_ON((unsigned long)base_addr & ~PAGE_MASK);
 	PCPU_SETUP_BUG_ON(ai->unit_size < size_sum);
-	PCPU_SETUP_BUG_ON(offset_in_page(ai->unit_size));
+	PCPU_SETUP_BUG_ON(ai->unit_size & ~PAGE_MASK);
 	PCPU_SETUP_BUG_ON(ai->unit_size < PCPU_MIN_UNIT_SIZE);
 	PCPU_SETUP_BUG_ON(ai->dyn_size < PERCPU_DYNAMIC_EARLY_SIZE);
 	PCPU_SETUP_BUG_ON(pcpu_verify_alloc_info(ai) < 0);
@@ -1695,8 +1683,9 @@ int __init pcpu_setup_first_chunk(const struct pcpu_alloc_info *ai,
 	schunk->map[1] = ai->static_size;
 	schunk->map_used = 1;
 	if (schunk->free_size)
-		schunk->map[++schunk->map_used] = ai->static_size + schunk->free_size;
-	schunk->map[schunk->map_used] |= 1;
+		schunk->map[++schunk->map_used] = 1 | (ai->static_size + schunk->free_size);
+	else
+		schunk->map[1] |= 1;
 
 	/* init dynamic chunk if necessary */
 	if (dyn_size) {
@@ -1833,7 +1822,7 @@ static struct pcpu_alloc_info * __init pcpu_build_alloc_info(
 
 	alloc_size = roundup(min_unit_size, atom_size);
 	upa = alloc_size / min_unit_size;
-	while (alloc_size % upa || (offset_in_page(alloc_size / upa)))
+	while (alloc_size % upa || ((alloc_size / upa) & ~PAGE_MASK))
 		upa--;
 	max_upa = upa;
 
@@ -1865,7 +1854,7 @@ static struct pcpu_alloc_info * __init pcpu_build_alloc_info(
 	for (upa = max_upa; upa; upa--) {
 		int allocs = 0, wasted = 0;
 
-		if (alloc_size % upa || (offset_in_page(alloc_size / upa)))
+		if (alloc_size % upa || ((alloc_size / upa) & ~PAGE_MASK))
 			continue;
 
 		for (group = 0; group < nr_groups; group++) {

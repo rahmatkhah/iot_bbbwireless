@@ -239,7 +239,7 @@ static void tdi_reset (struct ehci_hcd *ehci)
  * Reset a non-running (STS_HALT == 1) controller.
  * Must be called with interrupts enabled and the lock not held.
  */
-int ehci_reset(struct ehci_hcd *ehci)
+static int ehci_reset (struct ehci_hcd *ehci)
 {
 	int	retval;
 	u32	command = ehci_readl(ehci, &ehci->regs->command);
@@ -275,7 +275,6 @@ int ehci_reset(struct ehci_hcd *ehci)
 			ehci->resuming_ports = 0;
 	return retval;
 }
-EXPORT_SYMBOL_GPL(ehci_reset);
 
 /*
  * Idle the controller (turn off the schedules).
@@ -332,11 +331,11 @@ static void ehci_turn_off_all_ports(struct ehci_hcd *ehci)
 	int	port = HCS_N_PORTS(ehci->hcs_params);
 
 	while (port--) {
+		ehci_writel(ehci, PORT_RWC_BITS,
+				&ehci->regs->port_status[port]);
 		spin_unlock_irq(&ehci->lock);
 		ehci_port_power(ehci, port, false);
 		spin_lock_irq(&ehci->lock);
-		ehci_writel(ehci, PORT_RWC_BITS,
-				&ehci->regs->port_status[port]);
 	}
 }
 
@@ -589,7 +588,7 @@ static int ehci_run (struct usb_hcd *hcd)
 	 * streaming mappings for I/O buffers, like pci_map_single(),
 	 * can return segments above 4GB, if the device allows.
 	 *
-	 * NOTE:  the dma mask is visible through dev->dma_mask, so
+	 * NOTE:  the dma mask is visible through dma_supported(), so
 	 * drivers can pass this info along ... like NETIF_F_HIGHDMA,
 	 * Scsi_Host.highmem_io, and so forth.  It's readonly to all
 	 * host side drivers though.
@@ -1250,6 +1249,11 @@ EXPORT_SYMBOL_GPL(ehci_init_driver);
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_AUTHOR (DRIVER_AUTHOR);
 MODULE_LICENSE ("GPL");
+
+#ifdef CONFIG_USB_EHCI_FSL
+#include "ehci-fsl.c"
+#define	PLATFORM_DRIVER		ehci_fsl_driver
+#endif
 
 #ifdef CONFIG_USB_EHCI_SH
 #include "ehci-sh.c"

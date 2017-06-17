@@ -98,17 +98,15 @@ static void ip_cmsg_recv_retopts(struct msghdr *msg, struct sk_buff *skb)
 }
 
 static void ip_cmsg_recv_checksum(struct msghdr *msg, struct sk_buff *skb,
-				  int tlen, int offset)
+				  int offset)
 {
 	__wsum csum = skb->csum;
 
 	if (skb->ip_summed != CHECKSUM_COMPLETE)
 		return;
 
-	if (offset != 0) {
-		int tend_off = skb_transport_offset(skb) + tlen;
-		csum = csum_sub(csum, skb_checksum(skb, tend_off, offset, 0));
-	}
+	if (offset != 0)
+		csum = csum_sub(csum, csum_partial(skb->data, offset, 0));
 
 	put_cmsg(msg, SOL_IP, IP_CHECKSUM, sizeof(__wsum), &csum);
 }
@@ -154,7 +152,7 @@ static void ip_cmsg_recv_dstaddr(struct msghdr *msg, struct sk_buff *skb)
 }
 
 void ip_cmsg_recv_offset(struct msghdr *msg, struct sk_buff *skb,
-			 int tlen, int offset)
+			 int offset)
 {
 	struct inet_sock *inet = inet_sk(skb->sk);
 	unsigned int flags = inet->cmsg_flags;
@@ -217,7 +215,7 @@ void ip_cmsg_recv_offset(struct msghdr *msg, struct sk_buff *skb,
 	}
 
 	if (flags & IP_CMSG_CHECKSUM)
-		ip_cmsg_recv_checksum(msg, skb, tlen, offset);
+		ip_cmsg_recv_checksum(msg, skb, offset);
 }
 EXPORT_SYMBOL(ip_cmsg_recv_offset);
 
@@ -595,7 +593,6 @@ static int do_ip_setsockopt(struct sock *sk, int level,
 	case IP_TRANSPARENT:
 	case IP_MINTTL:
 	case IP_NODEFRAG:
-	case IP_BIND_ADDRESS_NO_PORT:
 	case IP_UNICAST_IF:
 	case IP_MULTICAST_TTL:
 	case IP_MULTICAST_ALL:
@@ -745,9 +742,6 @@ static int do_ip_setsockopt(struct sock *sk, int level,
 			break;
 		}
 		inet->nodefrag = val ? 1 : 0;
-		break;
-	case IP_BIND_ADDRESS_NO_PORT:
-		inet->bind_address_no_port = val ? 1 : 0;
 		break;
 	case IP_MTU_DISCOVER:
 		if (val < IP_PMTUDISC_DONT || val > IP_PMTUDISC_OMIT)
@@ -1192,14 +1186,7 @@ void ipv4_pktinfo_prepare(const struct sock *sk, struct sk_buff *skb)
 		pktinfo->ipi_ifindex = 0;
 		pktinfo->ipi_spec_dst.s_addr = 0;
 	}
-	/* We need to keep the dst for __ip_options_echo()
-	 * We could restrict the test to opt.ts_needtime || opt.srr,
-	 * but the following is good enough as IP options are not often used.
-	 */
-	if (unlikely(IPCB(skb)->opt.optlen))
-		skb_dst_force(skb);
-	else
-		skb_dst_drop(skb);
+	skb_dst_drop(skb);
 }
 
 int ip_setsockopt(struct sock *sk, int level,
@@ -1262,22 +1249,11 @@ EXPORT_SYMBOL(compat_ip_setsockopt);
  *	the _received_ ones. The set sets the _sent_ ones.
  */
 
-static bool getsockopt_needs_rtnl(int optname)
-{
-	switch (optname) {
-	case IP_MSFILTER:
-	case MCAST_MSFILTER:
-		return true;
-	}
-	return false;
-}
-
 static int do_ip_getsockopt(struct sock *sk, int level, int optname,
 			    char __user *optval, int __user *optlen, unsigned int flags)
 {
 	struct inet_sock *inet = inet_sk(sk);
-	bool needs_rtnl = getsockopt_needs_rtnl(optname);
-	int val, err = 0;
+	int val;
 	int len;
 
 	if (level != SOL_IP)
@@ -1291,8 +1267,6 @@ static int do_ip_getsockopt(struct sock *sk, int level, int optname,
 	if (len < 0)
 		return -EINVAL;
 
-	if (needs_rtnl)
-		rtnl_lock();
 	lock_sock(sk);
 
 	switch (optname) {
@@ -1361,9 +1335,6 @@ static int do_ip_getsockopt(struct sock *sk, int level, int optname,
 	case IP_NODEFRAG:
 		val = inet->nodefrag;
 		break;
-	case IP_BIND_ADDRESS_NO_PORT:
-		val = inet->bind_address_no_port;
-		break;
 	case IP_MTU_DISCOVER:
 		val = inet->pmtudisc;
 		break;
@@ -1410,35 +1381,39 @@ static int do_ip_getsockopt(struct sock *sk, int level, int optname,
 	case IP_MSFILTER:
 	{
 		struct ip_msfilter msf;
+		int err;
 
 		if (len < IP_MSFILTER_SIZE(0)) {
-			err = -EINVAL;
-			goto out;
+			release_sock(sk);
+			return -EINVAL;
 		}
 		if (copy_from_user(&msf, optval, IP_MSFILTER_SIZE(0))) {
-			err = -EFAULT;
-			goto out;
+			release_sock(sk);
+			return -EFAULT;
 		}
 		err = ip_mc_msfget(sk, &msf,
 				   (struct ip_msfilter __user *)optval, optlen);
-		goto out;
+		release_sock(sk);
+		return err;
 	}
 	case MCAST_MSFILTER:
 	{
 		struct group_filter gsf;
+		int err;
 
 		if (len < GROUP_FILTER_SIZE(0)) {
-			err = -EINVAL;
-			goto out;
+			release_sock(sk);
+			return -EINVAL;
 		}
 		if (copy_from_user(&gsf, optval, GROUP_FILTER_SIZE(0))) {
-			err = -EFAULT;
-			goto out;
+			release_sock(sk);
+			return -EFAULT;
 		}
 		err = ip_mc_gsfget(sk, &gsf,
 				   (struct group_filter __user *)optval,
 				   optlen);
-		goto out;
+		release_sock(sk);
+		return err;
 	}
 	case IP_MULTICAST_ALL:
 		val = inet->mc_all;
@@ -1505,12 +1480,6 @@ static int do_ip_getsockopt(struct sock *sk, int level, int optname,
 			return -EFAULT;
 	}
 	return 0;
-
-out:
-	release_sock(sk);
-	if (needs_rtnl)
-		rtnl_unlock();
-	return err;
 }
 
 int ip_getsockopt(struct sock *sk, int level,

@@ -52,15 +52,11 @@ ENDPROC(cpu_v7_proc_fin)
 	.align	5
 	.pushsection	.idmap.text, "ax"
 ENTRY(cpu_v7_reset)
-	mrc	p15, 0, r2, c1, c0, 0		@ ctrl register
-	bic	r2, r2, #0x1			@ ...............m
- THUMB(	bic	r2, r2, #1 << 30 )		@ SCTLR.TE (Thumb exceptions)
-	mcr	p15, 0, r2, c1, c0, 0		@ disable MMU
+	mrc	p15, 0, r1, c1, c0, 0		@ ctrl register
+	bic	r1, r1, #0x1			@ ...............m
+ THUMB(	bic	r1, r1, #1 << 30 )		@ SCTLR.TE (Thumb exceptions)
+	mcr	p15, 0, r1, c1, c0, 0		@ disable MMU
 	isb
-#ifdef CONFIG_ARM_VIRT_EXT
-	teq	r1, #0
-	bne	__hyp_soft_restart
-#endif
 	bx	r0
 ENDPROC(cpu_v7_reset)
 	.popsection
@@ -99,7 +95,7 @@ ENDPROC(cpu_v7_dcache_clean_area)
 .equ	cpu_v7_suspend_size, 4 * 9
 #ifdef CONFIG_ARM_CPU_SUSPEND
 ENTRY(cpu_v7_do_suspend)
-	stmfd	sp!, {r4 - r11, lr}
+	stmfd	sp!, {r4 - r10, lr}
 	mrc	p15, 0, r4, c13, c0, 0	@ FCSE/PID
 	mrc	p15, 0, r5, c13, c0, 3	@ User r/o thread ID
 	stmia	r0!, {r4 - r5}
@@ -116,7 +112,7 @@ ENTRY(cpu_v7_do_suspend)
 	mrc	p15, 0, r9, c1, c0, 1	@ Auxiliary control register
 	mrc	p15, 0, r10, c1, c0, 2	@ Co-processor access control
 	stmia	r0, {r5 - r11}
-	ldmfd	sp!, {r4 - r11, pc}
+	ldmfd	sp!, {r4 - r10, pc}
 ENDPROC(cpu_v7_do_suspend)
 
 ENTRY(cpu_v7_do_resume)

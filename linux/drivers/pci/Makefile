@@ -33,7 +33,6 @@ obj-$(CONFIG_PCI_IOV) += iov.o
 #
 obj-$(CONFIG_ALPHA) += setup-irq.o
 obj-$(CONFIG_ARM) += setup-irq.o
-obj-$(CONFIG_ARM64) += setup-irq.o
 obj-$(CONFIG_UNICORE32) += setup-irq.o
 obj-$(CONFIG_SUPERH) += setup-irq.o
 obj-$(CONFIG_MIPS) += setup-irq.o
@@ -59,3 +58,6 @@ obj-$(CONFIG_XEN_PCIDEV_FRONTEND) += xen-pcifront.o
 obj-$(CONFIG_OF) += of.o
 
 ccflags-$(CONFIG_PCI_DEBUG) := -DDEBUG
+
+# PCI host controller drivers
+obj-y += host/

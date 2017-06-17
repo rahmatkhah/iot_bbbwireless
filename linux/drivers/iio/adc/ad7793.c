@@ -369,6 +369,13 @@ static ssize_t ad7793_write_frequency(struct device *dev,
 	long lval;
 	int i, ret;
 
+	mutex_lock(&indio_dev->mlock);
+	if (iio_buffer_enabled(indio_dev)) {
+		mutex_unlock(&indio_dev->mlock);
+		return -EBUSY;
+	}
+	mutex_unlock(&indio_dev->mlock);
+
 	ret = kstrtol(buf, 10, &lval);
 	if (ret)
 		return ret;
@@ -376,21 +383,20 @@ static ssize_t ad7793_write_frequency(struct device *dev,
 	if (lval == 0)
 		return -EINVAL;
 
+	ret = -EINVAL;
+
 	for (i = 0; i < 16; i++)
-		if (lval == st->chip_info->sample_freq_avail[i])
-			break;
-	if (i == 16)
-		return -EINVAL;
+		if (lval == st->chip_info->sample_freq_avail[i]) {
+			mutex_lock(&indio_dev->mlock);
+			st->mode &= ~AD7793_MODE_RATE(-1);
+			st->mode |= AD7793_MODE_RATE(i);
+			ad_sd_write_reg(&st->sd, AD7793_REG_MODE,
+					 sizeof(st->mode), st->mode);
+			mutex_unlock(&indio_dev->mlock);
+			ret = 0;
+		}
 
-	ret = iio_device_claim_direct_mode(indio_dev);
-	if (ret)
-		return ret;
-	st->mode &= ~AD7793_MODE_RATE(-1);
-	st->mode |= AD7793_MODE_RATE(i);
-	ad_sd_write_reg(&st->sd, AD7793_REG_MODE, sizeof(st->mode), st->mode);
-	iio_device_release_direct_mode(indio_dev);
-
-	return len;
+	return ret ? ret : len;
 }
 
 static IIO_DEV_ATTR_SAMP_FREQ(S_IWUSR | S_IRUGO,
@@ -784,7 +790,6 @@ static int ad7793_probe(struct spi_device *spi)
 	spi_set_drvdata(spi, indio_dev);
 
 	indio_dev->dev.parent = &spi->dev;
-	indio_dev->dev.of_node = spi->dev.of_node;
 	indio_dev->name = spi_get_device_id(spi)->name;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->channels = st->chip_info->channels;

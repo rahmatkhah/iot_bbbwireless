@@ -96,22 +96,8 @@ static void omap_atomic_complete(struct omap_atomic_state_commit *commit)
 	priv->dispc_ops->runtime_get();
 
 	drm_atomic_helper_commit_modeset_disables(dev, old_state);
-
-	/* With the current dss dispc implementation we have to enable
-	 * the new modeset before we can commit planes. The dispc ovl
-	 * configuration relies on the video mode configuration been
-	 * written into the HW when the ovl configuration is
-	 * calculated.
-	 *
-	 * This approach is not ideal because after a mode change the
-	 * plane update is executed only after the first vblank
-	 * interrupt. The dispc implementation should be fixed so that
-	 * it is able use uncommitted drm state information.
-	 */
+	drm_atomic_helper_commit_planes(dev, old_state);
 	drm_atomic_helper_commit_modeset_enables(dev, old_state);
-	omap_atomic_wait_for_completion(dev, old_state);
-
-	drm_atomic_helper_commit_planes(dev, old_state, 0);
 
 	omap_atomic_wait_for_completion(dev, old_state);
 
@@ -229,8 +215,6 @@ static int get_connector_type(struct omap_dss_device *dssdev)
 		return DRM_MODE_CONNECTOR_HDMIA;
 	case OMAP_DISPLAY_TYPE_DVI:
 		return DRM_MODE_CONNECTOR_DVID;
-	case OMAP_DISPLAY_TYPE_DSI:
-		return DRM_MODE_CONNECTOR_DSI;
 	default:
 		return DRM_MODE_CONNECTOR_Unknown;
 	}
@@ -258,13 +242,38 @@ static void omap_disconnect_dssdevs(void)
 		dssdev->driver->disconnect(dssdev);
 }
 
+static bool dssdev_with_alias_exists(const char *alias)
+{
+	struct omap_dss_device *dssdev = NULL;
+
+	for_each_dss_dev(dssdev) {
+		if (strcmp(alias, dssdev->alias) == 0) {
+			omap_dss_put_device(dssdev);
+			return true;
+		}
+	}
+
+	return false;
+}
+
 static int omap_connect_dssdevs(void)
 {
 	int r;
 	struct omap_dss_device *dssdev = NULL;
+	bool no_displays = true;
+	struct device_node *aliases;
+	struct property *pp;
 
-	if (!omapdss_stack_is_ready())
-		return -EPROBE_DEFER;
+	aliases = of_find_node_by_path("/aliases");
+	if (aliases) {
+		for_each_property_of_node(aliases, pp) {
+			if (strncmp(pp->name, "display", 7) != 0)
+				continue;
+
+			if (dssdev_with_alias_exists(pp->name) == false)
+				return -EPROBE_DEFER;
+		}
+	}
 
 	for_each_dss_dev(dssdev) {
 		r = dssdev->driver->connect(dssdev);
@@ -274,8 +283,13 @@ static int omap_connect_dssdevs(void)
 		} else if (r) {
 			dev_warn(dssdev->dev, "could not connect display: %s\n",
 				dssdev->name);
+		} else {
+			no_displays = false;
 		}
 	}
+
+	if (no_displays)
+		return -EPROBE_DEFER;
 
 	return 0;
 
@@ -383,7 +397,6 @@ static int omap_modeset_init(struct drm_device *dev)
 	int num_crtcs;
 	int i, id = 0;
 	int ret;
-	u32 min_w, min_h, max_w, max_h;
 
 	drm_mode_config_init(dev);
 
@@ -544,16 +557,14 @@ static int omap_modeset_init(struct drm_device *dev)
 		priv->num_planes, priv->num_crtcs, priv->num_encoders,
 		priv->num_connectors);
 
-	priv->dispc_ops->get_min_max_size(&min_w, &min_h, &max_w, &max_h);
-
-	dev->mode_config.min_width = min_w;
-	dev->mode_config.min_height = min_h;
+	dev->mode_config.min_width = 32;
+	dev->mode_config.min_height = 32;
 
 	/* note: eventually will need some cpu_is_omapXYZ() type stuff here
 	 * to fill in these limits properly on different OMAP generations..
 	 */
-	dev->mode_config.max_width = max_w;
-	dev->mode_config.max_height = max_h;
+	dev->mode_config.max_width = 2048;
+	dev->mode_config.max_height = 2048;
 
 	dev->mode_config.funcs = &omap_mode_config_funcs;
 
@@ -690,18 +701,12 @@ static int ioctl_gem_info(struct drm_device *dev, void *data,
 }
 
 static const struct drm_ioctl_desc ioctls[DRM_COMMAND_END - DRM_COMMAND_BASE] = {
-	DRM_IOCTL_DEF_DRV(OMAP_GET_PARAM, ioctl_get_param,
-			  DRM_AUTH | DRM_RENDER_ALLOW),
-	DRM_IOCTL_DEF_DRV(OMAP_SET_PARAM, ioctl_set_param,
-			  DRM_AUTH | DRM_MASTER | DRM_ROOT_ONLY),
-	DRM_IOCTL_DEF_DRV(OMAP_GEM_NEW, ioctl_gem_new,
-			  DRM_AUTH | DRM_RENDER_ALLOW),
-	DRM_IOCTL_DEF_DRV(OMAP_GEM_CPU_PREP, ioctl_gem_cpu_prep,
-			  DRM_AUTH | DRM_RENDER_ALLOW),
-	DRM_IOCTL_DEF_DRV(OMAP_GEM_CPU_FINI, ioctl_gem_cpu_fini,
-			  DRM_AUTH | DRM_RENDER_ALLOW),
-	DRM_IOCTL_DEF_DRV(OMAP_GEM_INFO, ioctl_gem_info,
-			  DRM_AUTH | DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(OMAP_GET_PARAM, ioctl_get_param, DRM_UNLOCKED|DRM_AUTH),
+	DRM_IOCTL_DEF_DRV(OMAP_SET_PARAM, ioctl_set_param, DRM_UNLOCKED|DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY),
+	DRM_IOCTL_DEF_DRV(OMAP_GEM_NEW, ioctl_gem_new, DRM_UNLOCKED|DRM_AUTH),
+	DRM_IOCTL_DEF_DRV(OMAP_GEM_CPU_PREP, ioctl_gem_cpu_prep, DRM_UNLOCKED|DRM_AUTH),
+	DRM_IOCTL_DEF_DRV(OMAP_GEM_CPU_FINI, ioctl_gem_cpu_fini, DRM_UNLOCKED|DRM_AUTH),
+	DRM_IOCTL_DEF_DRV(OMAP_GEM_INFO, ioctl_gem_info, DRM_UNLOCKED|DRM_AUTH),
 };
 
 /*
@@ -764,6 +769,10 @@ static int dev_load(struct drm_device *dev, unsigned long flags)
 		drm_crtc_vblank_off(priv->crtcs[i]);
 
 	priv->fbdev = omap_fbdev_init(dev);
+	if (!priv->fbdev) {
+		dev_warn(dev->dev, "omap_fbdev_init failed\n");
+		/* well, limp along without an fbdev.. maybe X11 will work? */
+	}
 
 	/* store off drm_device for use in pm ops */
 	dev_set_drvdata(dev->dev, dev);
@@ -771,7 +780,7 @@ static int dev_load(struct drm_device *dev, unsigned long flags)
 	drm_kms_helper_poll_init(dev);
 
 	if (priv->dispc_ops->has_writeback()) {
-		ret = wb_init(dev);
+		ret = wbm2m_init(dev);
 		if (ret)
 			dev_warn(dev->dev, "failed to initialize writeback\n");
 		else
@@ -788,7 +797,7 @@ static int dev_unload(struct drm_device *dev)
 	DBG("unload: dev=%p", dev);
 
 	if (priv->wb_initialized)
-		wb_cleanup(dev);
+		wbm2m_cleanup(dev);
 
 	drm_kms_helper_poll_fini(dev);
 
@@ -832,7 +841,7 @@ static void dev_lastclose(struct drm_device *dev)
 {
 	int i;
 
-	/* we don't support vga_switcheroo.. so just make sure the fbdev
+	/* we don't support vga-switcheroo.. so just make sure the fbdev
 	 * mode is active
 	 */
 	struct omap_drm_private *priv = dev->dev_private;
@@ -911,7 +920,7 @@ static const struct file_operations omapdriver_fops = {
 
 static struct drm_driver omap_drm_driver = {
 	.driver_features = DRIVER_MODESET | DRIVER_GEM  | DRIVER_PRIME |
-		DRIVER_ATOMIC | DRIVER_RENDER,
+		DRIVER_ATOMIC,
 	.load = dev_load,
 	.unload = dev_unload,
 	.open = dev_open,
@@ -919,7 +928,7 @@ static struct drm_driver omap_drm_driver = {
 	.preclose = dev_preclose,
 	.postclose = dev_postclose,
 	.set_busid = drm_platform_set_busid,
-	.get_vblank_counter = drm_vblank_no_hw_counter,
+	.get_vblank_counter = drm_vblank_count,
 	.enable_vblank = omap_irq_enable_vblank,
 	.disable_vblank = omap_irq_disable_vblank,
 #ifdef CONFIG_DEBUG_FS
@@ -1052,23 +1061,35 @@ static struct platform_driver pdev = {
 	.remove = pdev_remove,
 };
 
-static struct platform_driver * const drivers[] = {
-	&omap_dmm_driver,
-	&pdev,
-};
-
 static int __init omap_drm_init(void)
 {
+	int r;
+
 	DBG("init");
 
-	return platform_register_drivers(drivers, ARRAY_SIZE(drivers));
+	r = platform_driver_register(&omap_dmm_driver);
+	if (r) {
+		pr_err("DMM driver registration failed\n");
+		return r;
+	}
+
+	r = platform_driver_register(&pdev);
+	if (r) {
+		pr_err("omapdrm driver registration failed\n");
+		platform_driver_unregister(&omap_dmm_driver);
+		return r;
+	}
+
+	return 0;
 }
 
 static void __exit omap_drm_fini(void)
 {
 	DBG("fini");
 
-	platform_unregister_drivers(drivers, ARRAY_SIZE(drivers));
+	platform_driver_unregister(&pdev);
+
+	platform_driver_unregister(&omap_dmm_driver);
 }
 
 /* need late_initcall() so we load after dss_driver's are loaded */

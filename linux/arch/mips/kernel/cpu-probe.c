@@ -32,9 +32,6 @@
 #include <asm/spram.h>
 #include <asm/uaccess.h>
 
-/* Hardware capabilities */
-unsigned int elf_hwcap __read_mostly;
-
 /*
  * Get the FPU Implementation/Revision.
  */
@@ -191,7 +188,7 @@ __setup("nohtw", htw_disable);
 static int mips_ftlb_disabled;
 static int mips_has_ftlb_configured;
 
-static int set_ftlb_enable(struct cpuinfo_mips *c, int enable);
+static void set_ftlb_enable(struct cpuinfo_mips *c, int enable);
 
 static int __init ftlb_disable(char *s)
 {
@@ -205,10 +202,7 @@ static int __init ftlb_disable(char *s)
 		return 1;
 
 	/* Disable it in the boot cpu */
-	if (set_ftlb_enable(&cpu_data[0], 0)) {
-		pr_warn("Can't turn FTLB off\n");
-		return 1;
-	}
+	set_ftlb_enable(&cpu_data[0], 0);
 
 	back_to_back_c0_hazard();
 
@@ -370,58 +364,45 @@ static unsigned int calculate_ftlb_probability(struct cpuinfo_mips *c)
 		return 3;
 }
 
-static int set_ftlb_enable(struct cpuinfo_mips *c, int enable)
+static void set_ftlb_enable(struct cpuinfo_mips *c, int enable)
 {
-	unsigned int config;
+	unsigned int config6;
 
 	/* It's implementation dependent how the FTLB can be enabled */
 	switch (c->cputype) {
 	case CPU_PROAPTIV:
 	case CPU_P5600:
 		/* proAptiv & related cores use Config6 to enable the FTLB */
-		config = read_c0_config6();
+		config6 = read_c0_config6();
 		/* Clear the old probability value */
-		config &= ~(3 << MIPS_CONF6_FTLBP_SHIFT);
+		config6 &= ~(3 << MIPS_CONF6_FTLBP_SHIFT);
 		if (enable)
 			/* Enable FTLB */
-			write_c0_config6(config |
+			write_c0_config6(config6 |
 					 (calculate_ftlb_probability(c)
 					  << MIPS_CONF6_FTLBP_SHIFT)
 					 | MIPS_CONF6_FTLBEN);
 		else
 			/* Disable FTLB */
-			write_c0_config6(config &  ~MIPS_CONF6_FTLBEN);
+			write_c0_config6(config6 &  ~MIPS_CONF6_FTLBEN);
+		back_to_back_c0_hazard();
 		break;
-	case CPU_I6400:
-		/* I6400 & related cores use Config7 to configure FTLB */
-		config = read_c0_config7();
-		/* Clear the old probability value */
-		config &= ~(3 << MIPS_CONF7_FTLBP_SHIFT);
-		write_c0_config7(config | (calculate_ftlb_probability(c)
-					   << MIPS_CONF7_FTLBP_SHIFT));
-		break;
-	default:
-		return 1;
 	}
-
-	return 0;
 }
 
 static inline unsigned int decode_config0(struct cpuinfo_mips *c)
 {
 	unsigned int config0;
-	int isa, mt;
+	int isa;
 
 	config0 = read_c0_config();
 
 	/*
 	 * Look for Standard TLB or Dual VTLB and FTLB
 	 */
-	mt = config0 & MIPS_CONF_MT;
-	if (mt == MIPS_CONF_MT_TLB)
+	if ((((config0 & MIPS_CONF_MT) >> 7) == 1) ||
+	    (((config0 & MIPS_CONF_MT) >> 7) == 4))
 		c->options |= MIPS_CPU_TLB;
-	else if (mt == MIPS_CONF_MT_FTLB)
-		c->options |= MIPS_CPU_TLB | MIPS_CPU_FTLB;
 
 	isa = (config0 & MIPS_CONF_AT) >> 13;
 	switch (isa) {
@@ -536,14 +517,13 @@ static inline unsigned int decode_config3(struct cpuinfo_mips *c)
 		c->options |= MIPS_CPU_SEGMENTS;
 	if (config3 & MIPS_CONF3_MSA)
 		c->ases |= MIPS_ASE_MSA;
-	if (config3 & MIPS_CONF3_PW) {
+	/* Only tested on 32-bit cores */
+	if ((config3 & MIPS_CONF3_PW) && config_enabled(CONFIG_32BIT)) {
 		c->htw_seq = 0;
 		c->options |= MIPS_CPU_HTW;
 	}
 	if (config3 & MIPS_CONF3_CDMM)
 		c->options |= MIPS_CPU_CDMM;
-	if (config3 & MIPS_CONF3_SP)
-		c->options |= MIPS_CPU_SP;
 
 	return config3 & MIPS_CONF_M;
 }
@@ -560,19 +540,7 @@ static inline unsigned int decode_config4(struct cpuinfo_mips *c)
 	if (cpu_has_tlb) {
 		if (((config4 & MIPS_CONF4_IE) >> 29) == 2)
 			c->options |= MIPS_CPU_TLBINV;
-
-		/*
-		 * R6 has dropped the MMUExtDef field from config4.
-		 * On R6 the fields always describe the FTLB, and only if it is
-		 * present according to Config.MT.
-		 */
-		if (!cpu_has_mips_r6)
-			mmuextdef = config4 & MIPS_CONF4_MMUEXTDEF;
-		else if (cpu_has_ftlb)
-			mmuextdef = MIPS_CONF4_MMUEXTDEF_VTLBSIZEEXT;
-		else
-			mmuextdef = 0;
-
+		mmuextdef = config4 & MIPS_CONF4_MMUEXTDEF;
 		switch (mmuextdef) {
 		case MIPS_CONF4_MMUEXTDEF_MMUSIZEEXT:
 			c->tlbsize += (config4 & MIPS_CONF4_MMUSIZEEXT) * 0x40;
@@ -977,7 +945,7 @@ static inline void cpu_probe_legacy(struct cpuinfo_mips *c, unsigned int cpu)
 		c->options = MIPS_CPU_TLB | MIPS_CPU_4K_CACHE | MIPS_CPU_4KEX |
 			     MIPS_CPU_FPU | MIPS_CPU_32FPR |
 			     MIPS_CPU_COUNTER | MIPS_CPU_WATCH |
-			     MIPS_CPU_LLSC | MIPS_CPU_BP_GHIST;
+			     MIPS_CPU_LLSC;
 		c->tlbsize = 64;
 		break;
 	case PRID_IMP_R14000:
@@ -992,7 +960,7 @@ static inline void cpu_probe_legacy(struct cpuinfo_mips *c, unsigned int cpu)
 		c->options = MIPS_CPU_TLB | MIPS_CPU_4K_CACHE | MIPS_CPU_4KEX |
 			     MIPS_CPU_FPU | MIPS_CPU_32FPR |
 			     MIPS_CPU_COUNTER | MIPS_CPU_WATCH |
-			     MIPS_CPU_LLSC | MIPS_CPU_BP_GHIST;
+			     MIPS_CPU_LLSC;
 		c->tlbsize = 64;
 		break;
 	case PRID_IMP_LOONGSON_64:  /* Loongson-2/3 */
@@ -1152,10 +1120,6 @@ static inline void cpu_probe_mips(struct cpuinfo_mips *c, unsigned int cpu)
 	case PRID_IMP_P5600:
 		c->cputype = CPU_P5600;
 		__cpu_name[cpu] = "MIPS P5600";
-		break;
-	case PRID_IMP_I6400:
-		c->cputype = CPU_I6400;
-		__cpu_name[cpu] = "MIPS I6400";
 		break;
 	case PRID_IMP_M5150:
 		c->cputype = CPU_M5150;
@@ -1479,9 +1443,7 @@ void cpu_probe(void)
 	case PRID_COMP_CAVIUM:
 		cpu_probe_cavium(c, cpu);
 		break;
-	case PRID_COMP_INGENIC_D0:
-	case PRID_COMP_INGENIC_D1:
-	case PRID_COMP_INGENIC_E1:
+	case PRID_COMP_INGENIC:
 		cpu_probe_ingenic(c, cpu);
 		break;
 	case PRID_COMP_NETLOGIC:
@@ -1516,10 +1478,6 @@ void cpu_probe(void)
 	else
 		cpu_set_nofpu_opts(c);
 
-	if (cpu_has_bp_ghist)
-		write_c0_r10k_diag(read_c0_r10k_diag() |
-				   R10K_DIAG_E_GHIST);
-
 	if (cpu_has_mips_r2_r6) {
 		c->srsets = ((read_c0_srsctl() >> 26) & 0x0f) + 1;
 		/* R2 has Performance Counter Interrupt indicator */
@@ -1528,14 +1486,10 @@ void cpu_probe(void)
 	else
 		c->srsets = 1;
 
-	if (cpu_has_mips_r6)
-		elf_hwcap |= HWCAP_MIPS_R6;
-
 	if (cpu_has_msa) {
 		c->msa_id = cpu_get_msa_id();
 		WARN(c->msa_id & MSA_IR_WRPF,
 		     "Vector register partitioning unimplemented!");
-		elf_hwcap |= HWCAP_MIPS_MSA;
 	}
 
 	cpu_probe_vmbits(c);

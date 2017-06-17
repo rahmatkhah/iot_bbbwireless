@@ -95,25 +95,37 @@ MODULE_PARM_DESC(bufsiz, "data bytes in biggest supported SPI message");
 
 /*-------------------------------------------------------------------------*/
 
+/*
+ * We can't use the standard synchronous wrappers for file I/O; we
+ * need to protect against async removal of the underlying spi_device.
+ */
+static void spidev_complete(void *arg)
+{
+	complete(arg);
+}
+
 static ssize_t
 spidev_sync(struct spidev_data *spidev, struct spi_message *message)
 {
 	DECLARE_COMPLETION_ONSTACK(done);
 	int status;
-	struct spi_device *spi;
+
+	message->complete = spidev_complete;
+	message->context = &done;
 
 	spin_lock_irq(&spidev->spi_lock);
-	spi = spidev->spi;
-	spin_unlock_irq(&spidev->spi_lock);
-
-	if (spi == NULL)
+	if (spidev->spi == NULL)
 		status = -ESHUTDOWN;
 	else
-		status = spi_sync(spi, message);
+		status = spi_async(spidev->spi, message);
+	spin_unlock_irq(&spidev->spi_lock);
 
-	if (status == 0)
-		status = message->actual_length;
-
+	if (status == 0) {
+		wait_for_completion(&done);
+		status = message->status;
+		if (status == 0)
+			status = message->actual_length;
+	}
 	return status;
 }
 
@@ -602,11 +614,11 @@ static int spidev_open(struct inode *inode, struct file *filp)
 	if (!spidev->tx_buffer) {
 		spidev->tx_buffer = kmalloc(bufsiz, GFP_KERNEL);
 		if (!spidev->tx_buffer) {
-			dev_dbg(&spidev->spi->dev, "open/ENOMEM\n");
-			status = -ENOMEM;
+				dev_dbg(&spidev->spi->dev, "open/ENOMEM\n");
+				status = -ENOMEM;
 			goto err_find_dev;
+			}
 		}
-	}
 
 	if (!spidev->rx_buffer) {
 		spidev->rx_buffer = kmalloc(bufsiz, GFP_KERNEL);
@@ -635,6 +647,7 @@ err_find_dev:
 static int spidev_release(struct inode *inode, struct file *filp)
 {
 	struct spidev_data	*spidev;
+	int			status = 0;
 
 	mutex_lock(&device_list_lock);
 	spidev = filp->private_data;
@@ -651,11 +664,11 @@ static int spidev_release(struct inode *inode, struct file *filp)
 		kfree(spidev->rx_buffer);
 		spidev->rx_buffer = NULL;
 
-		spin_lock_irq(&spidev->spi_lock);
 		if (spidev->spi)
 			spidev->speed_hz = spidev->spi->max_speed_hz;
 
 		/* ... after we unbound from the underlying device? */
+		spin_lock_irq(&spidev->spi_lock);
 		dofree = (spidev->spi == NULL);
 		spin_unlock_irq(&spidev->spi_lock);
 
@@ -664,7 +677,7 @@ static int spidev_release(struct inode *inode, struct file *filp)
 	}
 	mutex_unlock(&device_list_lock);
 
-	return 0;
+	return status;
 }
 
 static const struct file_operations spidev_fops = {
@@ -694,7 +707,6 @@ static struct class *spidev_class;
 #ifdef CONFIG_OF
 static const struct of_device_id spidev_dt_ids[] = {
 	{ .compatible = "rohm,dh2228fv" },
-	{ .compatible = "lineartechnology,ltc2488" },
 	{},
 };
 MODULE_DEVICE_TABLE(of, spidev_dt_ids);
@@ -710,7 +722,7 @@ static int spidev_probe(struct spi_device *spi)
 
 	/*
 	 * spidev should never be referenced in DT without a specific
-	 * compatible string, it is a Linux implementation thing
+	 * compatbile string, it is a Linux implementation thing
 	 * rather than a description of the hardware.
 	 */
 //	if (spi->dev.of_node && !of_match_device(spidev_dt_ids, &spi->dev)) {
@@ -788,6 +800,7 @@ static int spidev_remove(struct spi_device *spi)
 static struct spi_driver spidev_spi_driver = {
 	.driver = {
 		.name =		"spidev",
+		.owner =	THIS_MODULE,
 		.of_match_table = of_match_ptr(spidev_dt_ids),
 	},
 	.probe =	spidev_probe,

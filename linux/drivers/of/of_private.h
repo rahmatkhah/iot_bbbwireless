@@ -45,8 +45,6 @@ static inline struct device_node *kobj_to_device_node(struct kobject *kobj)
 extern int of_property_notify(int action, struct device_node *np,
 			      struct property *prop, struct property *old_prop);
 extern void of_node_release(struct kobject *kobj);
-extern int __of_changeset_apply(struct of_changeset *ocs);
-extern int __of_changeset_revert(struct of_changeset *ocs);
 #else /* CONFIG_OF_DYNAMIC */
 static inline int of_property_notify(int action, struct device_node *np,
 				     struct property *prop, struct property *old_prop)
@@ -79,12 +77,9 @@ extern void __of_update_property_sysfs(struct device_node *np,
 		struct property *newprop, struct property *oldprop);
 
 extern void __of_attach_node(struct device_node *np);
-extern int __of_attach_node_post(struct device_node *np);
+extern int __of_attach_node_sysfs(struct device_node *np);
 extern void __of_detach_node(struct device_node *np);
-extern void __of_detach_node_post(struct device_node *np);
-
-extern void __of_sysfs_remove_bin_file(struct device_node *np,
-				       struct property *prop);
+extern void __of_detach_node_sysfs(struct device_node *np);
 
 /* iterators for transactions, used for overlays */
 /* forward iterator */
@@ -103,36 +98,5 @@ static inline int of_overlay_init(void)
 	return 0;
 }
 #endif
-
-extern const struct rhashtable_params of_phandle_ht_params;
-extern struct rhashtable of_phandle_ht;
-extern bool of_phandle_ht_initialized;
-
-static inline bool of_phandle_ht_available(void)
-{
-	return of_phandle_ht_initialized;
-}
-
-static inline int of_phandle_ht_insert(struct device_node *np)
-{
-	if (!np || !np->phandle)
-		return 0;
-	return rhashtable_insert_fast(&of_phandle_ht,
-		&np->ht_node, of_phandle_ht_params);
-}
-
-static inline int of_phandle_ht_remove(struct device_node *np)
-{
-	if (!np || !np->phandle)
-		return 0;
-	return rhashtable_remove_fast(&of_phandle_ht,
-		&np->ht_node, of_phandle_ht_params);
-}
-
-static inline struct device_node *of_phandle_ht_lookup(phandle handle)
-{
-	return rhashtable_lookup_fast(&of_phandle_ht,
-			&handle, of_phandle_ht_params);
-}
 
 #endif /* _LINUX_OF_PRIVATE_H */

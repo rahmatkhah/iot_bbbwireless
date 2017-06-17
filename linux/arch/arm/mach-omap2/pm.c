@@ -13,7 +13,6 @@
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/err.h>
-#include <linux/platform_data/pm33xx.h>
 #include <linux/pm_opp.h>
 #include <linux/export.h>
 #include <linux/suspend.h>
@@ -111,7 +110,13 @@ static void __init omap2_init_processor_devices(void)
 
 int omap_pm_clkdms_setup(struct clockdomain *clkdm, void *unused)
 {
-	clkdm_allow_idle(clkdm);
+	/* XXX The usecount test is racy */
+	if ((clkdm->flags & CLKDM_CAN_ENABLE_AUTO) &&
+	    !(clkdm->flags & CLKDM_MISSING_IDLE_REPORTING))
+		clkdm_allow_idle(clkdm);
+	else if (clkdm->flags & CLKDM_CAN_FORCE_SLEEP &&
+		 clkdm->usecount == 0)
+		clkdm_sleep(clkdm);
 	return 0;
 }
 
@@ -277,7 +282,15 @@ static inline void omap_init_cpufreq(void)
 	if (!of_have_populated_dt())
 		devinfo.name = "omap-cpufreq";
 	else
-		devinfo.name = "ti-cpufreq";
+		devinfo.name = "cpufreq-voltdm";
+	platform_device_register_full(&devinfo);
+}
+
+void __init amx3_common_pm_init(void)
+{
+	struct platform_device_info devinfo = { };
+
+	devinfo.name = "pm33xx";
 	platform_device_register_full(&devinfo);
 }
 

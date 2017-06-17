@@ -2,7 +2,7 @@
  * omap iommu: tlb and pagetable primitives
  *
  * Copyright (C) 2008-2010 Nokia Corporation
- * Copyright (C) 2013-2016 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C) 2013-2015 Texas Instruments Inc
  *
  * Written by Hiroshi DOYU <Hiroshi.DOYU@nokia.com>,
  *		Paul Mundt and Toshihiro Kobayashi
@@ -634,11 +634,9 @@ iopgtable_store_entry_core(struct omap_iommu *obj, struct iotlb_entry *e)
 		break;
 	default:
 		fn = NULL;
+		BUG();
 		break;
 	}
-
-	if (WARN_ON(!fn))
-		return -EINVAL;
 
 	prot = get_iopte_attr(e);
 
@@ -1213,6 +1211,7 @@ static int omap_iommu_remove(struct platform_device *pdev)
 {
 	struct omap_iommu *obj = platform_get_drvdata(pdev);
 
+	iopgtable_clear_entry_all(obj);
 	omap_iommu_debugfs_remove(obj);
 
 	pm_runtime_disable(obj->dev);
@@ -1380,9 +1379,7 @@ static int omap_iommu_attach_init(struct device *dev,
 		 * should never fail, but please keep this around to ensure
 		 * we keep the hardware happy
 		 */
-		if (WARN_ON(!IS_ALIGNED((long)iommu->pgtable,
-					IOPGD_TABLE_SIZE)))
-			return -EINVAL;
+		BUG_ON(!IS_ALIGNED((long)iommu->pgtable, IOPGD_TABLE_SIZE));
 
 		clean_dcache_area(iommu->pgtable, IOPGD_TABLE_SIZE);
 	}

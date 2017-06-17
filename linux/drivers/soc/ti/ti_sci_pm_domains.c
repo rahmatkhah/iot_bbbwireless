@@ -1,7 +1,7 @@
 /*
  * TI SCI Generic Power Domain Driver
  *
- * Copyright (C) 2015-2016 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C) 2015 Texas Instruments Incorporated - http://www.ti.com/
  *	J Keerthy <j-keerthy@ti.com>
  *	Dave Gerlach <d-gerlach@ti.com>
  *
@@ -22,7 +22,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
 #include <linux/slab.h>
-#include <linux/soc/ti/ti_sci_protocol.h>
+#include <linux/ti_sci_protocol.h>
 
 #define TI_GENPD_NAME_LENGTH	16
 

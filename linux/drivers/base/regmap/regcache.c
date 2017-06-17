@@ -54,11 +54,11 @@ static int regcache_hw_init(struct regmap *map)
 		return -ENOMEM;
 
 	if (!map->reg_defaults_raw) {
-		bool cache_bypass = map->cache_bypass;
+		u32 cache_bypass = map->cache_bypass;
 		dev_warn(map->dev, "No cache defaults, reading back from HW\n");
 
 		/* Bypass the cache access till data read from HW*/
-		map->cache_bypass = true;
+		map->cache_bypass = 1;
 		tmp_buf = kmalloc(map->cache_size_raw, GFP_KERNEL);
 		if (!tmp_buf) {
 			ret = -ENOMEM;
@@ -249,22 +249,6 @@ int regcache_write(struct regmap *map,
 	return 0;
 }
 
-static bool regcache_reg_needs_sync(struct regmap *map, unsigned int reg,
-				    unsigned int val)
-{
-	int ret;
-
-	/* If we don't know the chip just got reset, then sync everything. */
-	if (!map->no_sync_defaults)
-		return true;
-
-	/* Is this the hardware default?  If so skip. */
-	ret = regcache_lookup_reg(map, reg);
-	if (ret >= 0 && val == map->reg_defaults[ret].def)
-		return false;
-	return true;
-}
-
 static int regcache_default_sync(struct regmap *map, unsigned int min,
 				 unsigned int max)
 {
@@ -282,12 +266,14 @@ static int regcache_default_sync(struct regmap *map, unsigned int min,
 		if (ret)
 			return ret;
 
-		if (!regcache_reg_needs_sync(map, reg, val))
+		/* Is this the hardware default?  If so skip. */
+		ret = regcache_lookup_reg(map, reg);
+		if (ret >= 0 && val == map->reg_defaults[ret].def)
 			continue;
 
-		map->cache_bypass = true;
+		map->cache_bypass = 1;
 		ret = _regmap_write(map, reg, val);
-		map->cache_bypass = false;
+		map->cache_bypass = 0;
 		if (ret) {
 			dev_err(map->dev, "Unable to sync register %#x. %d\n",
 				reg, ret);
@@ -315,7 +301,7 @@ int regcache_sync(struct regmap *map)
 	int ret = 0;
 	unsigned int i;
 	const char *name;
-	bool bypass;
+	unsigned int bypass;
 
 	BUG_ON(!map->cache_ops);
 
@@ -333,7 +319,7 @@ int regcache_sync(struct regmap *map)
 	map->async = true;
 
 	/* Apply any patch first */
-	map->cache_bypass = true;
+	map->cache_bypass = 1;
 	for (i = 0; i < map->patch_regs; i++) {
 		ret = _regmap_write(map, map->patch[i].reg, map->patch[i].def);
 		if (ret != 0) {
@@ -342,7 +328,7 @@ int regcache_sync(struct regmap *map)
 			goto out;
 		}
 	}
-	map->cache_bypass = false;
+	map->cache_bypass = 0;
 
 	if (map->cache_ops->sync)
 		ret = map->cache_ops->sync(map, 0, map->max_register);
@@ -356,7 +342,6 @@ out:
 	/* Restore the bypass state */
 	map->async = false;
 	map->cache_bypass = bypass;
-	map->no_sync_defaults = false;
 	map->unlock(map->lock_arg);
 
 	regmap_async_complete(map);
@@ -384,7 +369,7 @@ int regcache_sync_region(struct regmap *map, unsigned int min,
 {
 	int ret = 0;
 	const char *name;
-	bool bypass;
+	unsigned int bypass;
 
 	BUG_ON(!map->cache_ops);
 
@@ -412,7 +397,6 @@ out:
 	/* Restore the bypass state */
 	map->cache_bypass = bypass;
 	map->async = false;
-	map->no_sync_defaults = false;
 	map->unlock(map->lock_arg);
 
 	regmap_async_complete(map);
@@ -477,23 +461,18 @@ void regcache_cache_only(struct regmap *map, bool enable)
 EXPORT_SYMBOL_GPL(regcache_cache_only);
 
 /**
- * regcache_mark_dirty: Indicate that HW registers were reset to default values
+ * regcache_mark_dirty: Mark the register cache as dirty
  *
  * @map: map to mark
  *
- * Inform regcache that the device has been powered down or reset, so that
- * on resume, regcache_sync() knows to write out all non-default values
- * stored in the cache.
- *
- * If this function is not called, regcache_sync() will assume that
- * the hardware state still matches the cache state, modulo any writes that
- * happened when cache_only was true.
+ * Mark the register cache as dirty, for example due to the device
+ * having been powered down for suspend.  If the cache is not marked
+ * as dirty then the cache sync will be suppressed.
  */
 void regcache_mark_dirty(struct regmap *map)
 {
 	map->lock(map->lock_arg);
 	map->cache_dirty = true;
-	map->no_sync_defaults = true;
 	map->unlock(map->lock_arg);
 }
 EXPORT_SYMBOL_GPL(regcache_mark_dirty);
@@ -634,14 +613,17 @@ static int regcache_sync_block_single(struct regmap *map, void *block,
 			continue;
 
 		val = regcache_get_val(map, block, i);
-		if (!regcache_reg_needs_sync(map, regtmp, val))
+
+		/* Is this the hardware default?  If so skip. */
+		ret = regcache_lookup_reg(map, regtmp);
+		if (ret >= 0 && val == map->reg_defaults[ret].def)
 			continue;
 
-		map->cache_bypass = true;
+		map->cache_bypass = 1;
 
 		ret = _regmap_write(map, regtmp, val);
 
-		map->cache_bypass = false;
+		map->cache_bypass = 0;
 		if (ret != 0) {
 			dev_err(map->dev, "Unable to sync register %#x. %d\n",
 				regtmp, ret);
@@ -668,14 +650,14 @@ static int regcache_sync_block_raw_flush(struct regmap *map, const void **data,
 	dev_dbg(map->dev, "Writing %zu bytes for %d registers from 0x%x-0x%x\n",
 		count * val_bytes, count, base, cur - map->reg_stride);
 
-	map->cache_bypass = true;
+	map->cache_bypass = 1;
 
 	ret = _regmap_raw_write(map, base, *data, count * val_bytes);
 	if (ret)
 		dev_err(map->dev, "Unable to sync registers %#x-%#x. %d\n",
 			base, cur - map->reg_stride, ret);
 
-	map->cache_bypass = false;
+	map->cache_bypass = 0;
 
 	*data = NULL;
 
@@ -706,7 +688,10 @@ static int regcache_sync_block_raw(struct regmap *map, void *block,
 		}
 
 		val = regcache_get_val(map, block, i);
-		if (!regcache_reg_needs_sync(map, regtmp, val)) {
+
+		/* Is this the hardware default?  If so skip. */
+		ret = regcache_lookup_reg(map, regtmp);
+		if (ret >= 0 && val == map->reg_defaults[ret].def) {
 			ret = regcache_sync_block_raw_flush(map, &data,
 							    base, regtmp);
 			if (ret != 0)
@@ -729,7 +714,7 @@ int regcache_sync_block(struct regmap *map, void *block,
 			unsigned int block_base, unsigned int start,
 			unsigned int end)
 {
-	if (regmap_can_raw_write(map) && !map->use_single_write)
+	if (regmap_can_raw_write(map) && !map->use_single_rw)
 		return regcache_sync_block_raw(map, block, cache_present,
 					       block_base, start, end);
 	else

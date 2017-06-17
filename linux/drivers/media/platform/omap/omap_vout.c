@@ -45,7 +45,7 @@
 #include <media/v4l2-ioctl.h>
 
 #include <video/omapvrfb.h>
-#include <video/omapfb_dss.h>
+#include <video/omapdss.h>
 
 #include "omap_voutlib.h"
 #include "omap_voutdef.h"
@@ -195,34 +195,46 @@ static int omap_vout_try_format(struct v4l2_pix_format *pix)
 }
 
 /*
- * omap_vout_get_userptr: Convert user space virtual address to physical
- * address.
+ * omap_vout_uservirt_to_phys: This inline function is used to convert user
+ * space virtual address to physical address.
  */
-static int omap_vout_get_userptr(struct videobuf_buffer *vb, u32 virtp,
-				 u32 *physp)
+static unsigned long omap_vout_uservirt_to_phys(unsigned long virtp)
 {
-	struct frame_vector *vec;
-	int ret;
+	unsigned long physp = 0;
+	struct vm_area_struct *vma;
+	struct mm_struct *mm = current->mm;
 
 	/* For kernel direct-mapped memory, take the easy way */
-	if (virtp >= PAGE_OFFSET) {
-		*physp = virt_to_phys((void *)virtp);
-		return 0;
+	if (virtp >= PAGE_OFFSET)
+		return virt_to_phys((void *) virtp);
+
+	down_read(&current->mm->mmap_sem);
+	vma = find_vma(mm, virtp);
+	if (vma && (vma->vm_flags & VM_IO) && vma->vm_pgoff) {
+		/* this will catch, kernel-allocated, mmaped-to-usermode
+		   addresses */
+		physp = (vma->vm_pgoff << PAGE_SHIFT) + (virtp - vma->vm_start);
+		up_read(&current->mm->mmap_sem);
+	} else {
+		/* otherwise, use get_user_pages() for general userland pages */
+		int res, nr_pages = 1;
+		struct page *pages;
+
+		res = get_user_pages(current, current->mm, virtp, nr_pages, 1,
+				0, &pages, NULL);
+		up_read(&current->mm->mmap_sem);
+
+		if (res == nr_pages) {
+			physp =  __pa(page_address(&pages[0]) +
+					(virtp & ~PAGE_MASK));
+		} else {
+			printk(KERN_WARNING VOUT_NAME
+					"get_user_pages failed\n");
+			return 0;
+		}
 	}
 
-	vec = frame_vector_create(1);
-	if (!vec)
-		return -ENOMEM;
-
-	ret = get_vaddr_frames(virtp, 1, true, false, vec);
-	if (ret != 1) {
-		frame_vector_destroy(vec);
-		return -EINVAL;
-	}
-	*physp = __pfn_to_phys(frame_vector_pfns(vec)[0]);
-	vb->priv = vec;
-
-	return 0;
+	return physp;
 }
 
 /*
@@ -433,7 +445,7 @@ static int omapvid_init(struct omap_vout_device *vout, u32 addr)
 	int ret = 0, i;
 	struct v4l2_window *win;
 	struct omap_overlay *ovl;
-	int posx, posy, outw, outh;
+	int posx, posy, outw, outh, temp;
 	struct omap_video_timings *timing;
 	struct omapvideo_info *ovid = &vout->vid_info;
 
@@ -456,7 +468,9 @@ static int omapvid_init(struct omap_vout_device *vout, u32 addr)
 			/* Invert the height and width for 90
 			 * and 270 degree rotation
 			 */
-			swap(outw, outh);
+			temp = outw;
+			outw = outh;
+			outh = temp;
 			posy = (timing->y_res - win->w.width) - win->w.left;
 			posx = win->w.top;
 			break;
@@ -467,7 +481,9 @@ static int omapvid_init(struct omap_vout_device *vout, u32 addr)
 			break;
 
 		case dss_rotation_270_degree:
-			swap(outw, outh);
+			temp = outw;
+			outw = outh;
+			outh = temp;
 			posy = win->w.left;
 			posx = (timing->x_res - win->w.height) - win->w.top;
 			break;
@@ -772,15 +788,11 @@ static int omap_vout_buffer_prepare(struct videobuf_queue *q,
 	 * address of the buffer
 	 */
 	if (V4L2_MEMORY_USERPTR == vb->memory) {
-		int ret;
-
 		if (0 == vb->baddr)
 			return -EINVAL;
 		/* Physical address */
-		ret = omap_vout_get_userptr(vb, vb->baddr,
-				(u32 *)&vout->queued_buf_addr[vb->i]);
-		if (ret < 0)
-			return ret;
+		vout->queued_buf_addr[vb->i] = (u8 *)
+			omap_vout_uservirt_to_phys(vb->baddr);
 	} else {
 		unsigned long addr, dma_addr;
 		unsigned long size;
@@ -826,13 +838,12 @@ static void omap_vout_buffer_queue(struct videobuf_queue *q,
 static void omap_vout_buffer_release(struct videobuf_queue *q,
 			    struct videobuf_buffer *vb)
 {
-	vb->state = VIDEOBUF_NEEDS_INIT;
-	if (vb->memory == V4L2_MEMORY_USERPTR && vb->priv) {
-		struct frame_vector *vec = vb->priv;
+	struct omap_vout_device *vout = q->priv_data;
 
-		put_vaddr_frames(vec);
-		frame_vector_destroy(vec);
-	}
+	vb->state = VIDEOBUF_NEEDS_INIT;
+
+	if (V4L2_MEMORY_MMAP != vout->memory)
+		return;
 }
 
 /*
@@ -865,7 +876,7 @@ static void omap_vout_vm_close(struct vm_area_struct *vma)
 	vout->mmap_count--;
 }
 
-static const struct vm_operations_struct omap_vout_vm_ops = {
+static struct vm_operations_struct omap_vout_vm_ops = {
 	.open	= omap_vout_vm_open,
 	.close	= omap_vout_vm_close,
 };

@@ -100,6 +100,7 @@
 #include <linux/slab.h>
 #include <net/tcp_states.h>
 #include <linux/skbuff.h>
+#include <linux/netdevice.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <net/net_namespace.h>
@@ -374,8 +375,7 @@ static inline int compute_score(struct sock *sk, struct net *net,
 			return -1;
 		score += 4;
 	}
-	if (sk->sk_incoming_cpu == raw_smp_processor_id())
-		score++;
+
 	return score;
 }
 
@@ -418,9 +418,6 @@ static inline int compute_score2(struct sock *sk, struct net *net,
 			return -1;
 		score += 4;
 	}
-
-	if (sk->sk_incoming_cpu == raw_smp_processor_id())
-		score++;
 
 	return score;
 }
@@ -1018,20 +1015,12 @@ int udp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 
 	if (!rt) {
 		struct net *net = sock_net(sk);
-		__u8 flow_flags = inet_sk_flowi_flags(sk);
 
 		fl4 = &fl4_stack;
-
 		flowi4_init_output(fl4, ipc.oif, sk->sk_mark, tos,
 				   RT_SCOPE_UNIVERSE, sk->sk_protocol,
-				   flow_flags,
+				   inet_sk_flowi_flags(sk),
 				   faddr, saddr, dport, inet->inet_sport);
-
-		if (!saddr && ipc.oif) {
-			err = l3mdev_get_saddr(net, ipc.oif, fl4);
-			if (err < 0)
-				goto out;
-		}
 
 		security_sk_classify_flow(sk, flowi4_to_flowi(fl4));
 		rt = ip_route_output_flow(net, fl4, sk);
@@ -1275,7 +1264,6 @@ int udp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int noblock,
 	int peeked, off = 0;
 	int err;
 	int is_udplite = IS_UDPLITE(sk);
-	bool checksum_valid = false;
 	bool slow;
 
 	if (flags & MSG_ERRQUEUE)
@@ -1301,12 +1289,11 @@ try_again:
 	 */
 
 	if (copied < ulen || UDP_SKB_CB(skb)->partial_cov) {
-		checksum_valid = !udp_lib_checksum_complete(skb);
-		if (!checksum_valid)
+		if (udp_lib_checksum_complete(skb))
 			goto csum_copy_err;
 	}
 
-	if (checksum_valid || skb_csum_unnecessary(skb))
+	if (skb_csum_unnecessary(skb))
 		err = skb_copy_datagram_msg(skb, sizeof(struct udphdr),
 					    msg, copied);
 	else {
@@ -1342,7 +1329,7 @@ try_again:
 		*addr_len = sizeof(*sin);
 	}
 	if (inet->cmsg_flags)
-		ip_cmsg_recv_offset(msg, skb, sizeof(struct udphdr), off);
+		ip_cmsg_recv_offset(msg, skb, sizeof(struct udphdr));
 
 	err = copied;
 	if (flags & MSG_TRUNC)
@@ -1533,7 +1520,7 @@ int udp_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
 
 		/* if we're overly short, let UDP handle it */
 		encap_rcv = ACCESS_ONCE(up->encap_rcv);
-		if (encap_rcv) {
+		if (skb->len > sizeof(struct udphdr) && encap_rcv) {
 			int ret;
 
 			/* Verify checksum before giving to encap */

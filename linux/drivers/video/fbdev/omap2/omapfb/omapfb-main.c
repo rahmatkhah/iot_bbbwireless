@@ -29,8 +29,9 @@
 #include <linux/device.h>
 #include <linux/platform_device.h>
 #include <linux/omapfb.h>
+#include <linux/suspend.h>
 
-#include <video/omapfb_dss.h>
+#include <video/omapdss.h>
 #include <video/omapvrfb.h>
 
 #include "omapfb.h"
@@ -1091,7 +1092,7 @@ static void mmap_user_close(struct vm_area_struct *vma)
 	omapfb_put_mem_region(rg);
 }
 
-static const struct vm_operations_struct mmap_user_ops = {
+static struct vm_operations_struct mmap_user_ops = {
 	.open = mmap_user_open,
 	.close = mmap_user_close,
 };
@@ -2607,6 +2608,14 @@ static int omapfb_probe(struct platform_device *pdev)
 		dev_info(fbdev->dev, "using display '%s' mode %dx%d\n",
 			def_display->name, w, h);
 	}
+
+	/*
+	 * disable creation of new console during suspend.
+	 * this works around a problem where a ctrl-c is needed
+	 * to be entered on the VT to actually get the device
+	 * to continue into the suspend state.
+	 */
+	pm_set_vt_switch(0);
 
 	return 0;
 

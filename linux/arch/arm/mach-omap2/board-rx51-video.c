@@ -15,14 +15,13 @@
 #include <linux/spi/spi.h>
 #include <linux/mm.h>
 #include <asm/mach-types.h>
-#include <linux/platform_data/omapdss.h>
+#include <video/omapdss.h>
 #include <video/omap-panel-data.h>
 
 #include <linux/platform_data/spi-omap2-mcspi.h>
 
 #include "soc.h"
 #include "board-rx51.h"
-#include "display.h"
 
 #include "mux.h"
 
@@ -33,6 +32,7 @@
 static struct connector_atv_platform_data rx51_tv_pdata = {
 	.name = "tv",
 	.source = "venc.0",
+	.connector_type = OMAP_DSS_VENC_TYPE_COMPOSITE,
 	.invert_polarity = false,
 };
 

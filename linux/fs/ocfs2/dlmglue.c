@@ -3004,8 +3004,7 @@ int ocfs2_dlm_init(struct ocfs2_super *osb)
 	}
 
 	/* launch downconvert thread */
-	osb->dc_task = kthread_run(ocfs2_downconvert_thread, osb, "ocfs2dc-%s",
-			osb->uuid_str);
+	osb->dc_task = kthread_run(ocfs2_downconvert_thread, osb, "ocfs2dc");
 	if (IS_ERR(osb->dc_task)) {
 		status = PTR_ERR(osb->dc_task);
 		osb->dc_task = NULL;
@@ -3042,6 +3041,8 @@ local:
 	ocfs2_orphan_scan_lock_res_init(&osb->osb_orphan_scan.os_lockres, osb);
 
 	osb->cconn = conn;
+
+	status = 0;
 bail:
 	if (status < 0) {
 		ocfs2_dlm_shutdown_debug(osb);
@@ -3320,16 +3321,6 @@ static int ocfs2_downconvert_lock(struct ocfs2_super *osb,
 
 	mlog(ML_BASTS, "lockres %s, level %d => %d\n", lockres->l_name,
 	     lockres->l_level, new_level);
-
-	/*
-	 * On DLM_LKF_VALBLK, fsdlm behaves differently with o2cb. It always
-	 * expects DLM_LKF_VALBLK being set if the LKB has LVB, so that
-	 * we can recover correctly from node failure. Otherwise, we may get
-	 * invalid LVB in LKB, but without DLM_SBF_VALNOTVALID being set.
-	 */
-	if (!ocfs2_is_o2cb_active() &&
-	    lockres->l_ops->flags & LOCK_TYPE_USES_LVB)
-		lvb = 1;
 
 	if (lvb)
 		dlm_flags |= DLM_LKF_VALBLK;

@@ -113,7 +113,7 @@ xfs_trans_free(
  * blocks.  Locks and log items, however, are no inherited.  They must
  * be added to the new transaction explicitly.
  */
-STATIC xfs_trans_t *
+xfs_trans_t *
 xfs_trans_dup(
 	xfs_trans_t	*tp)
 {
@@ -251,7 +251,14 @@ xfs_trans_reserve(
 	 */
 undo_log:
 	if (resp->tr_logres > 0) {
-		xfs_log_done(tp->t_mountp, tp->t_ticket, NULL, false);
+		int		log_flags;
+
+		if (resp->tr_logflags & XFS_TRANS_PERM_LOG_RES) {
+			log_flags = XFS_LOG_REL_PERM_RESERV;
+		} else {
+			log_flags = 0;
+		}
+		xfs_log_done(tp->t_mountp, tp->t_ticket, NULL, log_flags);
 		tp->t_ticket = NULL;
 		tp->t_log_res = 0;
 		tp->t_flags &= ~XFS_TRANS_PERM_LOG_RES;
@@ -737,7 +744,7 @@ void
 xfs_trans_free_items(
 	struct xfs_trans	*tp,
 	xfs_lsn_t		commit_lsn,
-	bool			abort)
+	int			flags)
 {
 	struct xfs_log_item_desc *lidp, *next;
 
@@ -748,7 +755,7 @@ xfs_trans_free_items(
 
 		if (commit_lsn != NULLCOMMITLSN)
 			lip->li_ops->iop_committing(lip, commit_lsn);
-		if (abort)
+		if (flags & XFS_TRANS_ABORT)
 			lip->li_flags |= XFS_LI_ABORTED;
 		lip->li_ops->iop_unlock(lip);
 
@@ -885,15 +892,25 @@ xfs_trans_committed_bulk(
  * have already been unlocked as if the commit had succeeded.
  * Do not reference the transaction structure after this call.
  */
-static int
-__xfs_trans_commit(
+int
+xfs_trans_commit(
 	struct xfs_trans	*tp,
-	bool			regrant)
+	uint			flags)
 {
 	struct xfs_mount	*mp = tp->t_mountp;
 	xfs_lsn_t		commit_lsn = -1;
 	int			error = 0;
+	int			log_flags = 0;
 	int			sync = tp->t_flags & XFS_TRANS_SYNC;
+
+	/*
+	 * Determine whether this commit is releasing a permanent
+	 * log reservation or not.
+	 */
+	if (flags & XFS_TRANS_RELEASE_LOG_RES) {
+		ASSERT(tp->t_flags & XFS_TRANS_PERM_LOG_RES);
+		log_flags = XFS_LOG_REL_PERM_RESERV;
+	}
 
 	/*
 	 * If there is nothing to be logged by the transaction,
@@ -919,7 +936,7 @@ __xfs_trans_commit(
 		xfs_trans_apply_sb_deltas(tp);
 	xfs_trans_apply_dquot_deltas(tp);
 
-	xfs_log_commit_cil(mp, tp, &commit_lsn, regrant);
+	xfs_log_commit_cil(mp, tp, &commit_lsn, flags);
 
 	current_restore_flags_nested(&tp->t_pflags, PF_FSTRANS);
 	xfs_trans_free(tp);
@@ -930,9 +947,9 @@ __xfs_trans_commit(
 	 */
 	if (sync) {
 		error = _xfs_log_force_lsn(mp, commit_lsn, XFS_LOG_SYNC, NULL);
-		XFS_STATS_INC(mp, xs_trans_sync);
+		XFS_STATS_INC(xs_trans_sync);
 	} else {
-		XFS_STATS_INC(mp, xs_trans_async);
+		XFS_STATS_INC(xs_trans_async);
 	}
 
 	return error;
@@ -947,23 +964,16 @@ out_unreserve:
 	 */
 	xfs_trans_unreserve_and_mod_dquots(tp);
 	if (tp->t_ticket) {
-		commit_lsn = xfs_log_done(mp, tp->t_ticket, NULL, regrant);
+		commit_lsn = xfs_log_done(mp, tp->t_ticket, NULL, log_flags);
 		if (commit_lsn == -1 && !error)
 			error = -EIO;
 	}
 	current_restore_flags_nested(&tp->t_pflags, PF_FSTRANS);
-	xfs_trans_free_items(tp, NULLCOMMITLSN, !!error);
+	xfs_trans_free_items(tp, NULLCOMMITLSN, error ? XFS_TRANS_ABORT : 0);
 	xfs_trans_free(tp);
 
-	XFS_STATS_INC(mp, xs_trans_empty);
+	XFS_STATS_INC(xs_trans_empty);
 	return error;
-}
-
-int
-xfs_trans_commit(
-	struct xfs_trans	*tp)
-{
-	return __xfs_trans_commit(tp, false);
 }
 
 /*
@@ -976,22 +986,29 @@ xfs_trans_commit(
  */
 void
 xfs_trans_cancel(
-	struct xfs_trans	*tp)
+	xfs_trans_t		*tp,
+	int			flags)
 {
-	struct xfs_mount	*mp = tp->t_mountp;
-	bool			dirty = (tp->t_flags & XFS_TRANS_DIRTY);
+	int			log_flags;
+	xfs_mount_t		*mp = tp->t_mountp;
 
+	/*
+	 * See if the caller is being too lazy to figure out if
+	 * the transaction really needs an abort.
+	 */
+	if ((flags & XFS_TRANS_ABORT) && !(tp->t_flags & XFS_TRANS_DIRTY))
+		flags &= ~XFS_TRANS_ABORT;
 	/*
 	 * See if the caller is relying on us to shut down the
 	 * filesystem.  This happens in paths where we detect
 	 * corruption and decide to give up.
 	 */
-	if (dirty && !XFS_FORCED_SHUTDOWN(mp)) {
+	if ((tp->t_flags & XFS_TRANS_DIRTY) && !XFS_FORCED_SHUTDOWN(mp)) {
 		XFS_ERROR_REPORT("xfs_trans_cancel", XFS_ERRLEVEL_LOW, mp);
 		xfs_force_shutdown(mp, SHUTDOWN_CORRUPT_INCORE);
 	}
 #ifdef DEBUG
-	if (!dirty && !XFS_FORCED_SHUTDOWN(mp)) {
+	if (!(flags & XFS_TRANS_ABORT) && !XFS_FORCED_SHUTDOWN(mp)) {
 		struct xfs_log_item_desc *lidp;
 
 		list_for_each_entry(lidp, &tp->t_items, lid_trans)
@@ -1001,28 +1018,34 @@ xfs_trans_cancel(
 	xfs_trans_unreserve_and_mod_sb(tp);
 	xfs_trans_unreserve_and_mod_dquots(tp);
 
-	if (tp->t_ticket)
-		xfs_log_done(mp, tp->t_ticket, NULL, false);
+	if (tp->t_ticket) {
+		if (flags & XFS_TRANS_RELEASE_LOG_RES) {
+			ASSERT(tp->t_flags & XFS_TRANS_PERM_LOG_RES);
+			log_flags = XFS_LOG_REL_PERM_RESERV;
+		} else {
+			log_flags = 0;
+		}
+		xfs_log_done(mp, tp->t_ticket, NULL, log_flags);
+	}
 
 	/* mark this thread as no longer being in a transaction */
 	current_restore_flags_nested(&tp->t_pflags, PF_FSTRANS);
 
-	xfs_trans_free_items(tp, NULLCOMMITLSN, dirty);
+	xfs_trans_free_items(tp, NULLCOMMITLSN, flags);
 	xfs_trans_free(tp);
 }
 
 /*
  * Roll from one trans in the sequence of PERMANENT transactions to
  * the next: permanent transactions are only flushed out when
- * committed with xfs_trans_commit(), but we still want as soon
+ * committed with XFS_TRANS_RELEASE_LOG_RES, but we still want as soon
  * as possible to let chunks of it go to the log. So we commit the
  * chunk we've been working on and get a new transaction to continue.
  */
 int
-__xfs_trans_roll(
+xfs_trans_roll(
 	struct xfs_trans	**tpp,
-	struct xfs_inode	*dp,
-	int			*committed)
+	struct xfs_inode	*dp)
 {
 	struct xfs_trans	*trans;
 	struct xfs_trans_res	tres;
@@ -1032,8 +1055,7 @@ __xfs_trans_roll(
 	 * Ensure that the inode is always logged.
 	 */
 	trans = *tpp;
-	if (dp)
-		xfs_trans_log_inode(trans, dp, XFS_ILOG_CORE);
+	xfs_trans_log_inode(trans, dp, XFS_ILOG_CORE);
 
 	/*
 	 * Copy the critical parameters from one trans to the next.
@@ -1049,12 +1071,18 @@ __xfs_trans_roll(
 	 * is in progress. The caller takes the responsibility to cancel
 	 * the duplicate transaction that gets returned.
 	 */
-	error = __xfs_trans_commit(trans, true);
+	error = xfs_trans_commit(trans, 0);
 	if (error)
 		return error;
 
-	*committed = 1;
 	trans = *tpp;
+
+	/*
+	 * transaction commit worked ok so we can drop the extra ticket
+	 * reference that we gained in xfs_trans_dup()
+	 */
+	xfs_log_ticket_put(trans->t_ticket);
+
 
 	/*
 	 * Reserve space in the log for th next transaction.
@@ -1072,16 +1100,6 @@ __xfs_trans_roll(
 	if (error)
 		return error;
 
-	if (dp)
-		xfs_trans_ijoin(trans, dp, 0);
+	xfs_trans_ijoin(trans, dp, 0);
 	return 0;
-}
-
-int
-xfs_trans_roll(
-	struct xfs_trans	**tpp,
-	struct xfs_inode	*dp)
-{
-	int			committed = 0;
-	return __xfs_trans_roll(tpp, dp, &committed);
 }

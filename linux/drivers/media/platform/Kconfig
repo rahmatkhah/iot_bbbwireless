@@ -1,6 +1,6 @@
 #
 # Platform drivers
-#	Most drivers here are currently for webcam support
+#	All drivers here are currently for webcam support
 
 menuconfig V4L_PLATFORM_DRIVERS
 	bool "V4L platform devices"
@@ -86,9 +86,9 @@ config VIDEO_M32R_AR_M64278
 config VIDEO_OMAP3
 	tristate "OMAP 3 Camera support"
 	depends on VIDEO_V4L2 && I2C && VIDEO_V4L2_SUBDEV_API && ARCH_OMAP3
-	depends on HAS_DMA && OF
-	depends on OMAP_IOMMU
+	depends on HAS_DMA
 	select ARM_DMA_USE_IOMMU
+	select OMAP_IOMMU
 	select VIDEOBUF2_DMA_CONTIG
 	select MFD_SYSCON
 	---help---
@@ -122,10 +122,9 @@ source "drivers/media/platform/xilinx/Kconfig"
 
 config VIDEO_TI_CAL
 	tristate "TI CAL (Camera Adaptation Layer) driver"
-	depends on VIDEO_DEV && VIDEO_V4L2 && VIDEO_V4L2_SUBDEV_API
-	depends on SOC_DRA7XX || COMPILE_TEST
-	depends on HAS_DMA
-	select VIDEOBUF2_DMA_CONTIG
+	depends on VIDEO_DEV && VIDEO_V4L2 && SOC_DRA7XX
+	depends on VIDEO_V4L2_SUBDEV_API
+	depends on VIDEOBUF2_DMA_CONTIG
 	default n
 	---help---
 	  Support for the TI CAL (Camera Adaptation Layer) block
@@ -137,14 +136,10 @@ config VIDEO_TI_VIP
 	tristate "TI Video Input Port"
 	default n
 	depends on VIDEO_DEV && VIDEO_V4L2 && SOC_DRA7XX
-	depends on HAS_DMA
-	select VIDEOBUF2_DMA_CONTIG
-	select VIDEO_TI_VPDMA
-	select VIDEO_TI_SC
-	select VIDEO_TI_CSC
 	---help---
 	Driver support for VIP module on certain TI SoC's
 	VIP = Video Input Port.
+
 
 endif # V4L_PLATFORM_DRIVERS
 
@@ -238,16 +233,6 @@ config VIDEO_SAMSUNG_EXYNOS_GSC
 	help
 	  This is a v4l2 driver for Samsung EXYNOS5 SoC G-Scaler.
 
-config VIDEO_STI_BDISP
-	tristate "STMicroelectronics BDISP 2D blitter driver"
-	depends on VIDEO_DEV && VIDEO_V4L2
-	depends on ARCH_STI || COMPILE_TEST
-	depends on HAVE_DMA_ATTRS
-	select VIDEOBUF2_DMA_CONTIG
-	select V4L2_MEM2MEM_DEV
-	help
-	  This v4l2 mem2mem driver is a 2D blitter for STMicroelectronics SoC.
-
 config VIDEO_SH_VEU
 	tristate "SuperH VEU mem2mem video processing driver"
 	depends on VIDEO_DEV && VIDEO_V4L2 && HAS_DMA
@@ -256,18 +241,6 @@ config VIDEO_SH_VEU
 	help
 	    Support for the Video Engine Unit (VEU) on SuperH and
 	    SH-Mobile SoCs.
-
-config VIDEO_RENESAS_JPU
-	tristate "Renesas JPEG Processing Unit"
-	depends on VIDEO_DEV && VIDEO_V4L2 && HAS_DMA
-	depends on ARCH_SHMOBILE || COMPILE_TEST
-	select VIDEOBUF2_DMA_CONTIG
-	select V4L2_MEM2MEM_DEV
-	---help---
-	  This is a V4L2 driver for the Renesas JPEG Processing Unit.
-
-	  To compile this driver as a module, choose M here: the module
-	  will be called rcar_jpu.
 
 config VIDEO_RENESAS_VSP1
 	tristate "Renesas VSP1 Video Processing Engine"
@@ -287,9 +260,6 @@ config VIDEO_TI_VPE
 	depends on HAS_DMA
 	select VIDEOBUF2_DMA_CONTIG
 	select V4L2_MEM2MEM_DEV
-	select VIDEO_TI_VPDMA
-	select VIDEO_TI_SC
-	select VIDEO_TI_CSC
 	default n
 	---help---
 	  Support for the TI VPE(Video Processing Engine) block
@@ -302,15 +272,6 @@ config VIDEO_TI_VPE_DEBUG
 	  Enable debug messages on VPE driver.
 
 endif # V4L_MEM2MEM_DRIVERS
-
-config VIDEO_TI_VPDMA
-	tristate
-
-config VIDEO_TI_SC
-	tristate
-
-config VIDEO_TI_CSC
-	tristate
 
 menuconfig V4L_TEST_DRIVERS
 	bool "Media test drivers"
@@ -330,14 +291,3 @@ config VIDEO_VIM2M
 	  This is a virtual test device for the memory-to-memory driver
 	  framework.
 endif #V4L_TEST_DRIVERS
-
-menuconfig DVB_PLATFORM_DRIVERS
-	bool "DVB platform devices"
-	depends on MEDIA_DIGITAL_TV_SUPPORT
-	default n
-	---help---
-	  Say Y here to enable support for platform-specific Digital TV drivers.
-
-if DVB_PLATFORM_DRIVERS
-source "drivers/media/platform/sti/c8sectpfe/Kconfig"
-endif #DVB_PLATFORM_DRIVERS

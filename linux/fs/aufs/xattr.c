@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014-2017 Junjiro R. Okajima
+ * Copyright (C) 2014-2016 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -177,11 +177,11 @@ int au_cpup_xattr(struct dentry *h_dst, struct dentry *h_src, int ignore_flags,
 	}
 
 	if (value)
-		kfree(value);
+		au_delayed_kfree(value);
 
 out_free:
 	if (o)
-		kfree(o);
+		au_delayed_kfree(o);
 out:
 	if (!unlocked)
 		mutex_unlock(&h_isrc->i_mutex);
@@ -190,19 +190,6 @@ out:
 }
 
 /* ---------------------------------------------------------------------- */
-
-static int au_smack_reentering(struct super_block *sb)
-{
-#if IS_ENABLED(CONFIG_SECURITY_SMACK)
-	/*
-	 * as a part of lookup, smack_d_instantiate() is called, and it calls
-	 * i_op->getxattr(). ouch.
-	 */
-	return si_pid_test(sb);
-#else
-	return 0;
-#endif
-}
 
 enum {
 	AU_XATTR_LIST,
@@ -227,18 +214,14 @@ struct au_lgxattr {
 static ssize_t au_lgxattr(struct dentry *dentry, struct au_lgxattr *arg)
 {
 	ssize_t err;
-	int reenter;
 	struct path h_path;
 	struct super_block *sb;
 
 	sb = dentry->d_sb;
-	reenter = au_smack_reentering(sb);
-	if (!reenter) {
-		err = si_read_lock(sb, AuLock_FLUSH | AuLock_NOPLM);
-		if (unlikely(err))
-			goto out;
-	}
-	err = au_h_path_getattr(dentry, /*force*/1, &h_path, reenter);
+	err = si_read_lock(sb, AuLock_FLUSH | AuLock_NOPLM);
+	if (unlikely(err))
+		goto out;
+	err = au_h_path_getattr(dentry, /*force*/1, &h_path);
 	if (unlikely(err))
 		goto out_si;
 	if (unlikely(!h_path.dentry))
@@ -259,11 +242,9 @@ static ssize_t au_lgxattr(struct dentry *dentry, struct au_lgxattr *arg)
 	}
 
 out_di:
-	if (!reenter)
-		di_read_unlock(dentry, AuLock_IR);
+	di_read_unlock(dentry, AuLock_IR);
 out_si:
-	if (!reenter)
-		si_read_unlock(sb);
+	si_read_unlock(sb);
 out:
 	AuTraceErr(err);
 	return err;

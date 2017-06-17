@@ -17,7 +17,6 @@
 #include <linux/fs.h>
 #include <linux/file.h>
 #include <linux/blkdev.h>
-#include <linux/backing-dev.h>
 #include <linux/swap.h>
 #include <linux/swapops.h>
 
@@ -103,8 +102,7 @@ static long madvise_behavior(struct vm_area_struct *vma,
 
 	pgoff = vma->vm_pgoff + ((start - vma->vm_start) >> PAGE_SHIFT);
 	*prev = vma_merge(mm, *prev, start, end, new_flags, vma->anon_vma,
-			  vma->vm_file, pgoff, vma_policy(vma),
-			  vma->vm_userfaultfd_ctx);
+				vma->vm_file, pgoff, vma_policy(vma));
 	if (*prev) {
 		vma = *prev;
 		goto success;
@@ -301,7 +299,7 @@ static long madvise_remove(struct vm_area_struct *vma,
 
 	*prev = NULL;	/* tell sys_madvise we drop mmap_sem */
 
-	if (vma->vm_flags & VM_LOCKED)
+	if (vma->vm_flags & (VM_LOCKED | VM_HUGETLB))
 		return -EINVAL;
 
 	f = vma->vm_file;
@@ -386,7 +384,7 @@ madvise_vma(struct vm_area_struct *vma, struct vm_area_struct **prev,
 	}
 }
 
-static bool
+static int
 madvise_behavior_valid(int behavior)
 {
 	switch (behavior) {
@@ -408,10 +406,10 @@ madvise_behavior_valid(int behavior)
 #endif
 	case MADV_DONTDUMP:
 	case MADV_DODUMP:
-		return true;
+		return 1;
 
 	default:
-		return false;
+		return 0;
 	}
 }
 

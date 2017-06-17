@@ -73,7 +73,6 @@ struct lp855x {
 	struct device *dev;
 	struct lp855x_platform_data *pdata;
 	struct pwm_device *pwm;
-	struct regulator *supply;	/* regulator for VDD input */
 };
 
 static int lp855x_write_byte(struct lp855x *lp, u8 reg, u8 data)
@@ -258,15 +257,21 @@ static void lp855x_pwm_ctrl(struct lp855x *lp, int br, int max_br)
 static int lp855x_bl_update_status(struct backlight_device *bl)
 {
 	struct lp855x *lp = bl_get_data(bl);
-	int brightness = bl->props.brightness;
 
 	if (bl->props.state & (BL_CORE_SUSPENDED | BL_CORE_FBBLANK))
-		brightness = 0;
+		bl->props.brightness = 0;
 
-	if (lp->mode == PWM_BASED)
-		lp855x_pwm_ctrl(lp, brightness, bl->props.max_brightness);
-	else if (lp->mode == REGISTER_BASED)
-		lp855x_write_byte(lp, lp->cfg->reg_brightness, (u8)brightness);
+	if (lp->mode == PWM_BASED) {
+		int br = bl->props.brightness;
+		int max_br = bl->props.max_brightness;
+
+		lp855x_pwm_ctrl(lp, br, max_br);
+
+	} else if (lp->mode == REGISTER_BASED) {
+		u8 val = bl->props.brightness;
+
+		lp855x_write_byte(lp, lp->cfg->reg_brightness, val);
+	}
 
 	return 0;
 }
@@ -283,7 +288,6 @@ static int lp855x_backlight_register(struct lp855x *lp)
 	struct lp855x_platform_data *pdata = lp->pdata;
 	const char *name = pdata->name ? : DEFAULT_BL_NAME;
 
-	memset(&props, 0, sizeof(props));
 	props.type = BACKLIGHT_PLATFORM;
 	props.max_brightness = MAX_BRIGHTNESS;
 
@@ -380,6 +384,13 @@ static int lp855x_parse_dt(struct lp855x *lp)
 		pdata->rom_data = &rom[0];
 	}
 
+	pdata->supply = devm_regulator_get(dev, "power");
+	if (IS_ERR(pdata->supply)) {
+		if (PTR_ERR(pdata->supply) == -EPROBE_DEFER)
+			return -EPROBE_DEFER;
+		pdata->supply = NULL;
+	}
+
 	lp->pdata = pdata;
 
 	return 0;
@@ -420,15 +431,8 @@ static int lp855x_probe(struct i2c_client *cl, const struct i2c_device_id *id)
 	else
 		lp->mode = REGISTER_BASED;
 
-	lp->supply = devm_regulator_get(lp->dev, "power");
-	if (IS_ERR(lp->supply)) {
-		if (PTR_ERR(lp->supply) == -EPROBE_DEFER)
-			return -EPROBE_DEFER;
-		lp->supply = NULL;
-	}
-
-	if (lp->supply) {
-		ret = regulator_enable(lp->supply);
+	if (lp->pdata->supply) {
+		ret = regulator_enable(lp->pdata->supply);
 		if (ret < 0) {
 			dev_err(&cl->dev, "failed to enable supply: %d\n", ret);
 			return ret;
@@ -466,8 +470,8 @@ static int lp855x_remove(struct i2c_client *cl)
 
 	lp->bl->props.brightness = 0;
 	backlight_update_status(lp->bl);
-	if (lp->supply)
-		regulator_disable(lp->supply);
+	if (lp->pdata->supply)
+		regulator_disable(lp->pdata->supply);
 	sysfs_remove_group(&lp->dev->kobj, &lp855x_attr_group);
 
 	return 0;

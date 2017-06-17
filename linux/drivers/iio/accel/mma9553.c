@@ -17,6 +17,7 @@
 #include <linux/interrupt.h>
 #include <linux/slab.h>
 #include <linux/acpi.h>
+#include <linux/gpio/consumer.h>
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
 #include <linux/iio/events.h>
@@ -1001,7 +1002,7 @@ static irqreturn_t mma9553_irq_handler(int irq, void *private)
 	struct iio_dev *indio_dev = private;
 	struct mma9553_data *data = iio_priv(indio_dev);
 
-	data->timestamp = iio_get_time_ns(indio_dev);
+	data->timestamp = iio_get_time_ns();
 	/*
 	 * Since we only configure the interrupt pin when an
 	 * event is enabled, we are sure we have at least

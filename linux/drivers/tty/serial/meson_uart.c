@@ -370,7 +370,7 @@ static int meson_uart_verify_port(struct uart_port *port,
 static void meson_uart_release_port(struct uart_port *port)
 {
 	if (port->flags & UPF_IOREMAP) {
-		devm_iounmap(port->dev, port->membase);
+		iounmap(port->membase);
 		port->membase = NULL;
 	}
 }

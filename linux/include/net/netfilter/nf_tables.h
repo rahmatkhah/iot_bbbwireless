@@ -14,11 +14,9 @@
 
 struct nft_pktinfo {
 	struct sk_buff			*skb;
-	struct net			*net;
 	const struct net_device		*in;
 	const struct net_device		*out;
-	u8				pf;
-	u8				hook;
+	const struct nf_hook_ops	*ops;
 	u8				nhoff;
 	u8				thoff;
 	u8				tprot;
@@ -27,15 +25,16 @@ struct nft_pktinfo {
 };
 
 static inline void nft_set_pktinfo(struct nft_pktinfo *pkt,
+				   const struct nf_hook_ops *ops,
 				   struct sk_buff *skb,
 				   const struct nf_hook_state *state)
 {
 	pkt->skb = skb;
-	pkt->net = pkt->xt.net = state->net;
 	pkt->in = pkt->xt.in = state->in;
 	pkt->out = pkt->xt.out = state->out;
-	pkt->hook = pkt->xt.hooknum = state->hook;
-	pkt->pf = pkt->xt.family = state->pf;
+	pkt->ops = ops;
+	pkt->xt.hooknum = ops->hooknum;
+	pkt->xt.family = ops->pf;
 }
 
 /**
@@ -618,8 +617,6 @@ struct nft_expr_ops {
 	void				(*eval)(const struct nft_expr *expr,
 						struct nft_regs *regs,
 						const struct nft_pktinfo *pkt);
-	int				(*clone)(struct nft_expr *dst,
-						 const struct nft_expr *src);
 	unsigned int			size;
 
 	int				(*init)(const struct nft_ctx *ctx,
@@ -662,20 +659,10 @@ void nft_expr_destroy(const struct nft_ctx *ctx, struct nft_expr *expr);
 int nft_expr_dump(struct sk_buff *skb, unsigned int attr,
 		  const struct nft_expr *expr);
 
-static inline int nft_expr_clone(struct nft_expr *dst, struct nft_expr *src)
+static inline void nft_expr_clone(struct nft_expr *dst, struct nft_expr *src)
 {
-	int err;
-
 	__module_get(src->ops->type->owner);
-	if (src->ops->clone) {
-		dst->ops = src->ops;
-		err = src->ops->clone(dst, src);
-		if (err < 0)
-			return err;
-	} else {
-		memcpy(dst, src, src->ops->size);
-	}
-	return 0;
+	memcpy(dst, src, src->ops->size);
 }
 
 /**
@@ -794,7 +781,6 @@ struct nft_stats {
 };
 
 #define NFT_HOOK_OPS_MAX		2
-#define NFT_BASECHAIN_DISABLED		(1 << 0)
 
 /**
  *	struct nft_base_chain - nf_tables base chain
@@ -805,17 +791,14 @@ struct nft_stats {
  *	@policy: default policy
  *	@stats: per-cpu chain stats
  *	@chain: the chain
- *	@dev_name: device name that this base chain is attached to (if any)
  */
 struct nft_base_chain {
 	struct nf_hook_ops		ops[NFT_HOOK_OPS_MAX];
 	possible_net_t			pnet;
 	const struct nf_chain_type	*type;
 	u8				policy;
-	u8				flags;
 	struct nft_stats __percpu	*stats;
 	struct nft_chain		chain;
-	char 				dev_name[IFNAMSIZ];
 };
 
 static inline struct nft_base_chain *nft_base_chain(const struct nft_chain *chain)
@@ -823,12 +806,8 @@ static inline struct nft_base_chain *nft_base_chain(const struct nft_chain *chai
 	return container_of(chain, struct nft_base_chain, chain);
 }
 
-int nft_register_basechain(struct nft_base_chain *basechain,
-			   unsigned int hook_nops);
-void nft_unregister_basechain(struct nft_base_chain *basechain,
-			      unsigned int hook_nops);
-
-unsigned int nft_do_chain(struct nft_pktinfo *pkt, void *priv);
+unsigned int nft_do_chain(struct nft_pktinfo *pkt,
+			  const struct nf_hook_ops *ops);
 
 /**
  *	struct nft_table - nf_tables table
@@ -851,10 +830,6 @@ struct nft_table {
 	char				name[NFT_TABLE_MAXNAMELEN];
 };
 
-enum nft_af_flags {
-	NFT_AF_NEEDS_DEV	= (1 << 0),
-};
-
 /**
  *	struct nft_af_info - nf_tables address family info
  *
@@ -863,7 +838,6 @@ enum nft_af_flags {
  *	@nhooks: number of hooks in this family
  *	@owner: module owner
  *	@tables: used internally
- *	@flags: family flags
  *	@nops: number of hook ops in this family
  *	@hook_ops_init: initialization function for chain hook ops
  *	@hooks: hookfn overrides for packet validation
@@ -874,7 +848,6 @@ struct nft_af_info {
 	unsigned int			nhooks;
 	struct module			*owner;
 	struct list_head		tables;
-	u32				flags;
 	unsigned int			nops;
 	void				(*hook_ops_init)(struct nf_hook_ops *,
 							 unsigned int);

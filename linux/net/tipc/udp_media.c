@@ -48,11 +48,10 @@
 #include <linux/tipc_netlink.h>
 #include "core.h"
 #include "bearer.h"
+#include "msg.h"
 
 /* IANA assigned UDP port */
 #define UDP_PORT_DEFAULT	6118
-
-#define UDP_MIN_HEADROOM        48
 
 static const struct nla_policy tipc_nl_udp_policy[TIPC_NLA_UDP_MAX + 1] = {
 	[TIPC_NLA_UDP_UNSPEC]	= {.type = NLA_UNSPEC},
@@ -155,15 +154,11 @@ static int tipc_udp_send_msg(struct net *net, struct sk_buff *skb,
 	struct udp_bearer *ub;
 	struct udp_media_addr *dst = (struct udp_media_addr *)&dest->value;
 	struct udp_media_addr *src = (struct udp_media_addr *)&b->addr.value;
+	struct sk_buff *clone;
 	struct rtable *rt;
 
-	if (skb_headroom(skb) < UDP_MIN_HEADROOM) {
-		err = pskb_expand_head(skb, UDP_MIN_HEADROOM, 0, GFP_ATOMIC);
-		if (err)
-			goto tx_error;
-	}
-
-	skb_set_inner_protocol(skb, htons(ETH_P_TIPC));
+	clone = skb_clone(skb, GFP_ATOMIC);
+	skb_set_inner_protocol(clone, htons(ETH_P_TIPC));
 	ub = rcu_dereference_rtnl(b->media_ptr);
 	if (!ub) {
 		err = -ENODEV;
@@ -173,7 +168,7 @@ static int tipc_udp_send_msg(struct net *net, struct sk_buff *skb,
 		struct flowi4 fl = {
 			.daddr = dst->ipv4.s_addr,
 			.saddr = src->ipv4.s_addr,
-			.flowi4_mark = skb->mark,
+			.flowi4_mark = clone->mark,
 			.flowi4_proto = IPPROTO_UDP
 		};
 		rt = ip_route_output_key(net, &fl);
@@ -182,7 +177,7 @@ static int tipc_udp_send_msg(struct net *net, struct sk_buff *skb,
 			goto tx_error;
 		}
 		ttl = ip4_dst_hoplimit(&rt->dst);
-		err = udp_tunnel_xmit_skb(rt, ub->ubsock->sk, skb,
+		err = udp_tunnel_xmit_skb(rt, ub->ubsock->sk, clone,
 					  src->ipv4.s_addr,
 					  dst->ipv4.s_addr, 0, ttl, 0,
 					  src->udp_port, dst->udp_port,
@@ -200,12 +195,11 @@ static int tipc_udp_send_msg(struct net *net, struct sk_buff *skb,
 			.saddr = src->ipv6,
 			.flowi6_proto = IPPROTO_UDP
 		};
-		err = ipv6_stub->ipv6_dst_lookup(net, ub->ubsock->sk, &ndst,
-						 &fl6);
+		err = ipv6_stub->ipv6_dst_lookup(ub->ubsock->sk, &ndst, &fl6);
 		if (err)
 			goto tx_error;
 		ttl = ip6_dst_hoplimit(ndst);
-		err = udp_tunnel6_xmit_skb(ndst, ub->ubsock->sk, skb,
+		err = udp_tunnel6_xmit_skb(ndst, ub->ubsock->sk, clone,
 					   ndst->dev, &src->ipv6,
 					   &dst->ipv6, 0, ttl, src->udp_port,
 					   dst->udp_port, false);
@@ -214,7 +208,7 @@ static int tipc_udp_send_msg(struct net *net, struct sk_buff *skb,
 	return err;
 
 tx_error:
-	kfree_skb(skb);
+	kfree_skb(clone);
 	return err;
 }
 
@@ -223,6 +217,10 @@ static int tipc_udp_recv(struct sock *sk, struct sk_buff *skb)
 {
 	struct udp_bearer *ub;
 	struct tipc_bearer *b;
+	int usr = msg_user(buf_msg(skb));
+
+	if ((usr == LINK_PROTOCOL) || (usr == NAME_DISTRIBUTOR))
+		skb_linearize(skb);
 
 	ub = rcu_dereference_sk_user_data(sk);
 	if (!ub) {
@@ -376,11 +374,6 @@ static int tipc_udp_enable(struct net *net, struct tipc_bearer *b,
 		udp_conf.local_ip.s_addr = htonl(INADDR_ANY);
 		udp_conf.use_udp_checksums = false;
 		ub->ifindex = dev->ifindex;
-		if (tipc_mtu_bad(dev, sizeof(struct iphdr) +
-				      sizeof(struct udphdr))) {
-			err = -EINVAL;
-			goto err;
-		}
 		b->mtu = dev->mtu - sizeof(struct iphdr)
 			- sizeof(struct udphdr);
 #if IS_ENABLED(CONFIG_IPV6)
@@ -436,6 +429,7 @@ static void tipc_udp_disable(struct tipc_bearer *b)
 	}
 	if (ub->ubsock)
 		sock_set_flag(ub->ubsock->sk, SOCK_DEAD);
+	RCU_INIT_POINTER(b->media_ptr, NULL);
 	RCU_INIT_POINTER(ub->bearer, NULL);
 
 	/* sock_release need to be done outside of rtnl lock */

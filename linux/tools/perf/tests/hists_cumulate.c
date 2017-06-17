@@ -87,8 +87,6 @@ static int add_hist_entries(struct hists *hists, struct machine *machine)
 			},
 		};
 		struct hist_entry_iter iter = {
-			.evsel = evsel,
-			.sample	= &sample,
 			.hide_unresolved = false,
 		};
 
@@ -106,11 +104,9 @@ static int add_hist_entries(struct hists *hists, struct machine *machine)
 						  &sample) < 0)
 			goto out;
 
-		if (hist_entry_iter__add(&iter, &al, PERF_MAX_STACK_DEPTH,
-					 NULL) < 0) {
-			addr_location__put(&al);
+		if (hist_entry_iter__add(&iter, &al, evsel, &sample,
+					 PERF_MAX_STACK_DEPTH, NULL) < 0)
 			goto out;
-		}
 
 		fake_samples[i].thread = al.thread;
 		fake_samples[i].map = al.map;
@@ -279,7 +275,6 @@ static int test1(struct perf_evsel *evsel, struct machine *machine)
 
 	symbol_conf.use_callchain = false;
 	symbol_conf.cumulate_callchain = false;
-	perf_evsel__reset_sample_bit(evsel, CALLCHAIN);
 
 	setup_sorting();
 	callchain_register_param(&callchain_param);
@@ -426,7 +421,6 @@ static int test2(struct perf_evsel *evsel, struct machine *machine)
 
 	symbol_conf.use_callchain = true;
 	symbol_conf.cumulate_callchain = false;
-	perf_evsel__set_sample_bit(evsel, CALLCHAIN);
 
 	setup_sorting();
 	callchain_register_param(&callchain_param);
@@ -484,7 +478,6 @@ static int test3(struct perf_evsel *evsel, struct machine *machine)
 
 	symbol_conf.use_callchain = false;
 	symbol_conf.cumulate_callchain = true;
-	perf_evsel__reset_sample_bit(evsel, CALLCHAIN);
 
 	setup_sorting();
 	callchain_register_param(&callchain_param);
@@ -668,7 +661,6 @@ static int test4(struct perf_evsel *evsel, struct machine *machine)
 
 	symbol_conf.use_callchain = true;
 	symbol_conf.cumulate_callchain = true;
-	perf_evsel__set_sample_bit(evsel, CALLCHAIN);
 
 	setup_sorting();
 	callchain_register_param(&callchain_param);
@@ -703,7 +695,7 @@ int test__hists_cumulate(void)
 
 	TEST_ASSERT_VAL("No memory", evlist);
 
-	err = parse_events(evlist, "cpu-clock", NULL);
+	err = parse_events(evlist, "cpu-clock");
 	if (err)
 		goto out;
 

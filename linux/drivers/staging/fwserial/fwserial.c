@@ -2815,14 +2815,13 @@ static int __init fwserial_init(void)
 	/* num_ttys/num_ports must not be set above the static alloc avail */
 	if (num_ttys + num_loops > MAX_CARD_PORTS)
 		num_ttys = MAX_CARD_PORTS - num_loops;
-
 	num_ports = num_ttys + num_loops;
 
 	fwtty_driver = tty_alloc_driver(MAX_TOTAL_PORTS, TTY_DRIVER_REAL_RAW
 					| TTY_DRIVER_DYNAMIC_DEV);
 	if (IS_ERR(fwtty_driver)) {
 		err = PTR_ERR(fwtty_driver);
-		goto remove_debugfs;
+		return err;
 	}
 
 	fwtty_driver->driver_name	= KBUILD_MODNAME;
@@ -2924,9 +2923,7 @@ unregister_driver:
 	tty_unregister_driver(fwtty_driver);
 put_tty:
 	put_tty_driver(fwtty_driver);
-remove_debugfs:
 	debugfs_remove_recursive(fwserial_debugfs);
-
 	return err;
 }
 

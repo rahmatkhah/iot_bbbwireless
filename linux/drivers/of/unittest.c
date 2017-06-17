@@ -205,20 +205,16 @@ static int __init of_unittest_check_node_linkage(struct device_node *np)
 		if (child->parent != np) {
 			pr_err("Child node %s links to wrong parent %s\n",
 				 child->name, np->name);
-			rc = -EINVAL;
-			goto put_child;
+			return -EINVAL;
 		}
 
 		rc = of_unittest_check_node_linkage(child);
 		if (rc < 0)
-			goto put_child;
+			return rc;
 		count += rc;
 	}
 
 	return count + 1;
-put_child:
-	of_node_put(child);
-	return rc;
 }
 
 static void __init of_unittest_check_tree_linkage(void)
@@ -530,57 +526,22 @@ static void __init of_unittest_changeset(void)
 	unittest(!of_changeset_add_property(&chgset, parent, ppadd), "fail add prop\n");
 	unittest(!of_changeset_update_property(&chgset, parent, ppupdate), "fail update prop\n");
 	unittest(!of_changeset_remove_property(&chgset, parent, ppremove), "fail remove prop\n");
+	mutex_lock(&of_mutex);
 	unittest(!of_changeset_apply(&chgset), "apply failed\n");
+	mutex_unlock(&of_mutex);
 
 	/* Make sure node names are constructed correctly */
 	unittest((np = of_find_node_by_path("/testcase-data/changeset/n2/n21")),
 		 "'%s' not added\n", n21->full_name);
 	of_node_put(np);
 
+	mutex_lock(&of_mutex);
 	unittest(!of_changeset_revert(&chgset), "revert failed\n");
+	mutex_unlock(&of_mutex);
 
 	of_changeset_destroy(&chgset);
 #endif
 }
-
-static void __init of_unittest_changeset_helper(void)
-{
-#ifdef CONFIG_OF_DYNAMIC
-	struct device_node *n1, *n2, *n21, *parent, *np;
-	struct of_changeset chgset;
-
-	of_changeset_init(&chgset);
-
-	parent = of_find_node_by_path("/testcase-data/changeset");
-
-	unittest(parent, "testcase setup failure\n");
-	n1 = of_changeset_create_device_node(&chgset,
-			parent, "/testcase-data/changeset/n1");
-	unittest(n1, "testcase setup failure\n");
-	n2 = of_changeset_create_device_node(&chgset,
-			parent, "/testcase-data/changeset/n2");
-	unittest(n2, "testcase setup failure\n");
-	n21 = of_changeset_create_device_node(&chgset, n2, "%s/%s",
-			"/testcase-data/changeset/n2", "n21");
-
-	of_changeset_init(&chgset);
-	unittest(!of_changeset_add_property_string(&chgset, parent,
-				"prop-add", "foo"), "fail add prop\n");
-	unittest(!__of_changeset_apply(&chgset), "apply failed\n");
-
-	/* Make sure node names are constructed correctly */
-	unittest((np = of_find_node_by_path("/testcase-data/changeset/n2/n21")),
-		 "'%s' not added\n", n21->full_name);
-	of_node_put(np);
-
-	unittest(!__of_changeset_revert(&chgset), "revert failed\n");
-
-	of_changeset_destroy(&chgset);
-
-	of_node_put(parent);
-#endif
-}
-
 
 static void __init of_unittest_parse_interrupts(void)
 {
@@ -903,7 +864,7 @@ static int attach_node_and_children(struct device_node *np)
 	of_node_clear_flag(np, OF_DETACHED);
 	raw_spin_unlock_irqrestore(&devtree_lock, flags);
 
-	__of_attach_node_post(np);
+	__of_attach_node_sysfs(np);
 	mutex_unlock(&of_mutex);
 
 	while (child) {
@@ -961,7 +922,7 @@ static int __init unittest_data_add(void)
 	if (!of_root) {
 		of_root = unittest_data_node;
 		for_each_of_allnodes(np)
-			__of_attach_node_post(np);
+			__of_attach_node_sysfs(np);
 		of_aliases = of_find_node_by_path("/aliases");
 		of_chosen = of_find_node_by_path("/chosen");
 		return 0;
@@ -1018,6 +979,7 @@ static struct platform_driver unittest_driver = {
 	.remove			= unittest_remove,
 	.driver = {
 		.name		= "unittest",
+		.owner		= THIS_MODULE,
 		.of_match_table	= of_match_ptr(unittest_match),
 	},
 };
@@ -1704,6 +1666,7 @@ static const struct i2c_device_id unittest_i2c_dev_id[] = {
 static struct i2c_driver unittest_i2c_dev_driver = {
 	.driver = {
 		.name = "unittest-i2c-dev",
+		.owner = THIS_MODULE,
 	},
 	.probe = unittest_i2c_dev_probe,
 	.remove = unittest_i2c_dev_remove,
@@ -1798,6 +1761,7 @@ static const struct i2c_device_id unittest_i2c_mux_id[] = {
 static struct i2c_driver unittest_i2c_mux_driver = {
 	.driver = {
 		.name = "unittest-i2c-mux",
+		.owner = THIS_MODULE,
 	},
 	.probe = unittest_i2c_mux_probe,
 	.remove = unittest_i2c_mux_remove,
@@ -2261,7 +2225,6 @@ static int __init of_unittest(void)
 	of_unittest_property_string();
 	of_unittest_property_copy();
 	of_unittest_changeset();
-	of_unittest_changeset_helper();
 	of_unittest_parse_interrupts();
 	of_unittest_parse_interrupts_extended();
 	of_unittest_match_node();

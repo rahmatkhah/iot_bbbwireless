@@ -315,7 +315,7 @@ struct wl1271 {
 	bool watchdog_recovery;
 
 	/* Reg domain last configuration */
-	u32 reg_ch_conf_last[2]  __aligned(8);
+	u32 reg_ch_conf_last[2];
 	/* Reg domain pending configuration */
 	u32 reg_ch_conf_pending[2];
 

@@ -30,8 +30,6 @@
 #include "scsiglue.h"
 #include "debug.h"
 
-#define DRV_NAME "ums-cypress"
-
 MODULE_DESCRIPTION("SAT support for Cypress USB/ATA bridges with ATACB");
 MODULE_AUTHOR("Matthieu Castet <castet.matthieu@free.fr>");
 MODULE_LICENSE("GPL");
@@ -243,7 +241,6 @@ end:
 		srb->cmd_len = 12;
 }
 
-static struct scsi_host_template cypress_host_template;
 
 static int cypress_probe(struct usb_interface *intf,
 			 const struct usb_device_id *id)
@@ -253,8 +250,7 @@ static int cypress_probe(struct usb_interface *intf,
 	struct usb_device *device;
 
 	result = usb_stor_probe1(&us, intf, id,
-			(id - cypress_usb_ids) + cypress_unusual_dev_list,
-			&cypress_host_template);
+			(id - cypress_usb_ids) + cypress_unusual_dev_list);
 	if (result)
 		return result;
 
@@ -277,7 +273,7 @@ static int cypress_probe(struct usb_interface *intf,
 }
 
 static struct usb_driver cypress_driver = {
-	.name =		DRV_NAME,
+	.name =		"ums-cypress",
 	.probe =	cypress_probe,
 	.disconnect =	usb_stor_disconnect,
 	.suspend =	usb_stor_suspend,
@@ -290,4 +286,4 @@ static struct usb_driver cypress_driver = {
 	.no_dynamic_id = 1,
 };
 
-module_usb_stor_driver(cypress_driver, cypress_host_template, DRV_NAME);
+module_usb_driver(cypress_driver);

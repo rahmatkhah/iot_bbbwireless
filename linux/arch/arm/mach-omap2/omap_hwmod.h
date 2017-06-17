@@ -106,11 +106,6 @@ extern struct omap_hwmod_sysc_fields omap_hwmod_sysc_type3;
 #define DEBUG_TI81XXUART2_FLAGS	0
 #define DEBUG_TI81XXUART3_FLAGS	0
 #define DEBUG_AM33XXUART1_FLAGS	0
-#define DEBUG_AM33XXUART2_FLAGS	0
-#define DEBUG_AM33XXUART3_FLAGS	0
-#define DEBUG_AM33XXUART4_FLAGS	0
-#define DEBUG_AM33XXUART5_FLAGS	0
-#define DEBUG_AM33XXUART6_FLAGS	0
 
 #define DEBUG_OMAPUART_FLAGS	(HWMOD_INIT_NO_IDLE | HWMOD_INIT_NO_RESET)
 
@@ -153,21 +148,6 @@ extern struct omap_hwmod_sysc_fields omap_hwmod_sysc_type3;
 #elif defined(CONFIG_DEBUG_AM33XXUART1)
 #undef DEBUG_AM33XXUART1_FLAGS
 #define DEBUG_AM33XXUART1_FLAGS DEBUG_OMAPUART_FLAGS
-#elif defined(CONFIG_DEBUG_AM33XXUART2)
-#undef DEBUG_AM33XXUART2_FLAGS
-#define DEBUG_AM33XXUART2_FLAGS DEBUG_OMAPUART_FLAGS
-#elif defined(CONFIG_DEBUG_AM33XXUART3)
-#undef DEBUG_AM33XXUART3_FLAGS
-#define DEBUG_AM33XXUART3_FLAGS DEBUG_OMAPUART_FLAGS
-#elif defined(CONFIG_DEBUG_AM33XXUART4)
-#undef DEBUG_AM33XXUART4_FLAGS
-#define DEBUG_AM33XXUART4_FLAGS DEBUG_OMAPUART_FLAGS
-#elif defined(CONFIG_DEBUG_AM33XXUART5)
-#undef DEBUG_AM33XXUART5_FLAGS
-#define DEBUG_AM33XXUART5_FLAGS DEBUG_OMAPUART_FLAGS
-#elif defined(CONFIG_DEBUG_AM33XXUART6)
-#undef DEBUG_AM33XXUART6_FLAGS
-#define DEBUG_AM33XXUART6_FLAGS DEBUG_OMAPUART_FLAGS
 #endif
 
 /**
@@ -635,8 +615,8 @@ struct omap_hwmod_class {
 	int					(*pre_shutdown)(struct omap_hwmod *oh);
 	int					(*reset)(struct omap_hwmod *oh);
 	int					(*enable_preprogram)(struct omap_hwmod *oh);
-	void					(*lock)(struct omap_hwmod *oh);
-	void					(*unlock)(struct omap_hwmod *oh);
+	void				(*lock)(struct omap_hwmod *oh);
+	void				(*unlock)(struct omap_hwmod *oh);
 };
 
 /**
@@ -809,8 +789,7 @@ extern int omap3xxx_hwmod_init(void);
 extern int omap44xx_hwmod_init(void);
 extern int omap54xx_hwmod_init(void);
 extern int am33xx_hwmod_init(void);
-extern int dm814x_hwmod_init(void);
-extern int dm816x_hwmod_init(void);
+extern int ti81xx_hwmod_init(void);
 extern int dra7xx_hwmod_init(void);
 int am43xx_hwmod_init(void);
 

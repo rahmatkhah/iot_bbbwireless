@@ -90,7 +90,7 @@ static ssize_t profiling_store(struct kobject *kobj,
 KERNEL_ATTR_RW(profiling);
 #endif
 
-#ifdef CONFIG_KEXEC_CORE
+#ifdef CONFIG_KEXEC
 static ssize_t kexec_loaded_show(struct kobject *kobj,
 				 struct kobj_attribute *attr, char *buf)
 {
@@ -128,14 +128,13 @@ KERNEL_ATTR_RW(kexec_crash_size);
 static ssize_t vmcoreinfo_show(struct kobject *kobj,
 			       struct kobj_attribute *attr, char *buf)
 {
-	phys_addr_t vmcore_base = paddr_vmcoreinfo_note();
-
-	return sprintf(buf, "%pa %x\n", &vmcore_base,
+	return sprintf(buf, "%lx %x\n",
+		       paddr_vmcoreinfo_note(),
 		       (unsigned int)sizeof(vmcoreinfo_note));
 }
 KERNEL_ATTR_RO(vmcoreinfo);
 
-#endif /* CONFIG_KEXEC_CORE */
+#endif /* CONFIG_KEXEC */
 
 #if defined(CONFIG_PREEMPT_RT_FULL)
 static ssize_t  realtime_show(struct kobject *kobj,
@@ -206,7 +205,7 @@ static struct attribute * kernel_attrs[] = {
 #ifdef CONFIG_PROFILING
 	&profiling_attr.attr,
 #endif
-#ifdef CONFIG_KEXEC_CORE
+#ifdef CONFIG_KEXEC
 	&kexec_loaded_attr.attr,
 	&kexec_crash_loaded_attr.attr,
 	&kexec_crash_size_attr.attr,

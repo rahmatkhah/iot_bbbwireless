@@ -38,7 +38,7 @@ static struct mdp4_kms *get_kms(struct drm_encoder *encoder)
 	return to_mdp4_kms(to_mdp_kms(priv->kms));
 }
 
-#ifdef DOWNSTREAM_CONFIG_MSM_BUS_SCALING
+#ifdef CONFIG_MSM_BUS_SCALING
 #include <mach/board.h>
 static void bs_init(struct mdp4_lcdc_encoder *mdp4_lcdc_encoder)
 {
@@ -346,10 +346,8 @@ static void mdp4_lcdc_encoder_disable(struct drm_encoder *encoder)
 
 	mdp4_write(mdp4_kms, REG_MDP4_LCDC_ENABLE, 0);
 
-	if (panel) {
+	if (panel)
 		drm_panel_disable(panel);
-		drm_panel_unprepare(panel);
-	}
 
 	/*
 	 * Wait for a vsync so we know the ENABLE=0 latched before
@@ -414,10 +412,8 @@ static void mdp4_lcdc_encoder_enable(struct drm_encoder *encoder)
 	if (ret)
 		dev_err(dev->dev, "failed to enable lcdc_clk: %d\n", ret);
 
-	if (panel) {
-		drm_panel_prepare(panel);
+	if (panel)
 		drm_panel_enable(panel);
-	}
 
 	setup_phy(encoder);
 

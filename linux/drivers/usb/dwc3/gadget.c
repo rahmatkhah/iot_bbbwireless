@@ -238,7 +238,6 @@ void dwc3_gadget_giveback(struct dwc3_ep *dep, struct dwc3_request *req,
 		int status)
 {
 	struct dwc3			*dwc = dep->dwc;
-	unsigned int			unmap_after_complete = false;
 	int				i;
 
 	if (req->queued) {
@@ -263,19 +262,11 @@ void dwc3_gadget_giveback(struct dwc3_ep *dep, struct dwc3_request *req,
 	if (req->request.status == -EINPROGRESS)
 		req->request.status = status;
 
-	/*
-	 * NOTICE we don't want to unmap before calling ->complete() if we're
-	 * dealing with a bounced ep0 request. If we unmap it here, we would end
-	 * up overwritting the contents of req->buf and this could confuse the
-	 * gadget driver.
-	 */
-	if (dwc->ep0_bounced && dep->number <= 1) {
+	if (dwc->ep0_bounced && dep->number == 0)
 		dwc->ep0_bounced = false;
-		unmap_after_complete = true;
-	} else {
-		usb_gadget_unmap_request(&dwc->gadget,
-				&req->request, req->direction);
-	}
+	else
+		usb_gadget_unmap_request(&dwc->gadget, &req->request,
+				req->direction);
 
 	dev_dbg(dwc->dev, "request %p from %s completed %d/%d ===> %d\n",
 			req, dep->name, req->request.actual,
@@ -285,10 +276,6 @@ void dwc3_gadget_giveback(struct dwc3_ep *dep, struct dwc3_request *req,
 	spin_unlock(&dwc->lock);
 	usb_gadget_giveback_request(&dep->endpoint, &req->request);
 	spin_lock(&dwc->lock);
-
-	if (unmap_after_complete)
-		usb_gadget_unmap_request(&dwc->gadget,
-				&req->request, req->direction);
 }
 
 int dwc3_send_gadget_generic_command(struct dwc3 *dwc, unsigned cmd, u32 param)
@@ -601,23 +588,6 @@ static int __dwc3_gadget_ep_enable(struct dwc3_ep *dep,
 		trb_link->ctrl |= DWC3_TRB_CTRL_HWO;
 	}
 
-	switch (usb_endpoint_type(desc)) {
-	case USB_ENDPOINT_XFER_CONTROL:
-		strlcat(dep->name, "-control", sizeof(dep->name));
-		break;
-	case USB_ENDPOINT_XFER_ISOC:
-		strlcat(dep->name, "-isoc", sizeof(dep->name));
-		break;
-	case USB_ENDPOINT_XFER_BULK:
-		strlcat(dep->name, "-bulk", sizeof(dep->name));
-		break;
-	case USB_ENDPOINT_XFER_INT:
-		strlcat(dep->name, "-int", sizeof(dep->name));
-		break;
-	default:
-		dev_err(dwc->dev, "invalid endpoint transfer type\n");
-	}
-
 	return 0;
 }
 
@@ -657,8 +627,6 @@ static int __dwc3_gadget_ep_disable(struct dwc3_ep *dep)
 	struct dwc3		*dwc = dep->dwc;
 	u32			reg;
 
-	dwc3_trace(trace_dwc3_gadget, "Disabling %s", dep->name);
-
 	dwc3_remove_requests(dwc, dep);
 
 	/* make sure HW endpoint isn't stalled */
@@ -674,10 +642,6 @@ static int __dwc3_gadget_ep_disable(struct dwc3_ep *dep)
 	dep->comp_desc = NULL;
 	dep->type = 0;
 	dep->flags = 0;
-
-	snprintf(dep->name, sizeof(dep->name), "ep%d%s",
-			dep->number >> 1,
-			(dep->number & 1) ? "in" : "out");
 
 	return 0;
 }
@@ -724,6 +688,23 @@ static int dwc3_gadget_ep_enable(struct usb_ep *ep,
 		return 0;
 	}
 
+	switch (usb_endpoint_type(desc)) {
+	case USB_ENDPOINT_XFER_CONTROL:
+		strlcat(dep->name, "-control", sizeof(dep->name));
+		break;
+	case USB_ENDPOINT_XFER_ISOC:
+		strlcat(dep->name, "-isoc", sizeof(dep->name));
+		break;
+	case USB_ENDPOINT_XFER_BULK:
+		strlcat(dep->name, "-bulk", sizeof(dep->name));
+		break;
+	case USB_ENDPOINT_XFER_INT:
+		strlcat(dep->name, "-int", sizeof(dep->name));
+		break;
+	default:
+		dev_err(dwc->dev, "invalid endpoint transfer type\n");
+	}
+
 	spin_lock_irqsave(&dwc->lock, flags);
 	ret = __dwc3_gadget_ep_enable(dep, desc, ep->comp_desc, false, false);
 	spin_unlock_irqrestore(&dwc->lock, flags);
@@ -751,6 +732,10 @@ static int dwc3_gadget_ep_disable(struct usb_ep *ep)
 				dep->name);
 		return 0;
 	}
+
+	snprintf(dep->name, sizeof(dep->name), "ep%d%s",
+			dep->number >> 1,
+			(dep->number & 1) ? "in" : "out");
 
 	spin_lock_irqsave(&dwc->lock, flags);
 	ret = __dwc3_gadget_ep_disable(dep);
@@ -1579,10 +1564,11 @@ static int dwc3_gadget_pullup(struct usb_gadget *g, int is_on)
 
 	is_on = !!is_on;
 
+	if (is_on)
+		reinit_completion(&dwc->reset_event);
+
 	spin_lock_irqsave(&dwc->lock, flags);
 	ret = dwc3_gadget_run_stop(dwc, is_on, false);
-	if (is_on)
-		dwc->reset_event = 0;
 	spin_unlock_irqrestore(&dwc->lock, flags);
 
 try:
@@ -1605,37 +1591,29 @@ try:
 	if (is_on && dwc->revision < DWC3_REVISION_220A &&
 	    dwc->current_mode == DWC3_GCTL_PRTCAP_DEVICE) {
 		u32 devspd, ltssm;
-		int i;
+		unsigned long t;
 
 		/* only applicable if devspd != SUPERSPEED */
 		devspd = dwc3_readl(dwc->regs, DWC3_DCFG) & DWC3_DCFG_SPEED_MASK;
 		if (devspd == DWC3_DCFG_SUPERSPEED)
 			goto done;
 
+		/* get link state */
+		ltssm = dwc3_readl(dwc->regs, DWC3_GDBGLTSSM);
+		ltssm = (ltssm >> 22) & 0xf;
+
 		/**
 		 * Need to wait for 100ms and check if ltssm != 4 to detect
 		 * metastability issue. If we got a reset event then we are
 		 * safe and can continue.
 		 */
-		for (i = 0; i < 100; i++) {
-			if (dwc->reset_event)
-				goto done;
-
-			/* get link state */
-			ltssm = dwc3_readl(dwc->regs, DWC3_GDBGLTSSM);
-			ltssm = (ltssm >> 22) & 0xf;
-
-			/**
-			 * If link state != 4 we've hit the metastability issue.
-			 */
-			if (ltssm != 4)
-				break;
-
-			mdelay(1);
-		}
+		t = wait_for_completion_timeout(&dwc->reset_event,
+						msecs_to_jiffies(100));
+		if (t)
+			goto done;
 
 		/**
-		 * If link state == 4 after 100ms, we've not hit the metastability issue.
+		 * If link state != 4 we've hit the metastability issue, soft reset.
 		 */
 		if (ltssm == 4)
 			goto done;
@@ -1663,6 +1641,7 @@ try:
 			return ret;
 		}
 
+		reinit_completion(&dwc->reset_event);
 		/* restart gadget */
 		ret = dwc3_gadget_restart(dwc);
 		if (ret) {
@@ -1913,17 +1892,6 @@ static int dwc3_gadget_init_hw_endpoints(struct dwc3 *dwc,
 				return ret;
 		}
 
-		if (epnum == 0 || epnum == 1) {
-			dep->endpoint.caps.type_control = true;
-		} else {
-			dep->endpoint.caps.type_iso = true;
-			dep->endpoint.caps.type_bulk = true;
-			dep->endpoint.caps.type_int = true;
-		}
-
-		dep->endpoint.caps.dir_in = !!direction;
-		dep->endpoint.caps.dir_out = !direction;
-
 		INIT_LIST_HEAD(&dep->request_list);
 		INIT_LIST_HEAD(&dep->req_queued);
 	}
@@ -2041,6 +2009,14 @@ static int __dwc3_cleanup_done_trbs(struct dwc3 *dwc, struct dwc3_ep *dep,
 			s_pkt = 1;
 	}
 
+	/*
+	 * We assume here we will always receive the entire data block
+	 * which we should receive. Meaning, if we program RX to
+	 * receive 4K but we receive only 2K, we assume that's all we
+	 * should receive and we simply bounce the request back to the
+	 * gadget driver for further processing.
+	 */
+	req->request.actual += req->request.length - count;
 	if (s_pkt)
 		return 1;
 	if ((event->status & DEPEVT_STATUS_LST) &&
@@ -2060,7 +2036,6 @@ static int dwc3_cleanup_done_reqs(struct dwc3 *dwc, struct dwc3_ep *dep,
 	struct dwc3_trb		*trb;
 	unsigned int		slot;
 	unsigned int		i;
-	int			count = 0;
 	int			ret;
 
 	do {
@@ -2077,8 +2052,6 @@ static int dwc3_cleanup_done_reqs(struct dwc3 *dwc, struct dwc3_ep *dep,
 				slot++;
 			slot %= DWC3_TRB_NUM;
 			trb = &dep->trb_pool[slot];
-			count += trb->size & DWC3_TRB_SIZE_MASK;
-
 
 			ret = __dwc3_cleanup_done_trbs(dwc, dep, req, trb,
 					event, status);
@@ -2086,14 +2059,6 @@ static int dwc3_cleanup_done_reqs(struct dwc3 *dwc, struct dwc3_ep *dep,
 				break;
 		} while (++i < req->request.num_mapped_sgs);
 
-		/*
-		 * We assume here we will always receive the entire data block
-		 * which we should receive. Meaning, if we program RX to
-		 * receive 4K but we receive only 2K, we assume that's all we
-		 * should receive and we simply bounce the request back to the
-		 * gadget driver for further processing.
-		 */
-		req->request.actual += req->request.length - count;
 		dwc3_gadget_giveback(dep, req, status);
 
 		if (ret)
@@ -2117,10 +2082,6 @@ static int dwc3_cleanup_done_reqs(struct dwc3 *dwc, struct dwc3_ep *dep,
 		return 1;
 	}
 
-	if (usb_endpoint_xfer_isoc(dep->endpoint.desc))
-		if ((event->status & DEPEVT_STATUS_IOC) &&
-				(trb->ctrl & DWC3_TRB_CTRL_IOC))
-			return 0;
 	return 1;
 }
 
@@ -2436,7 +2397,7 @@ static void dwc3_gadget_reset_interrupt(struct dwc3 *dwc)
 	}
 
 	/* notify run/stop metastability workaround */
-	dwc->reset_event = 1;
+	complete(&dwc->reset_event);
 
 	dwc3_reset_gadget(dwc);
 
@@ -2914,7 +2875,7 @@ int dwc3_gadget_init(struct dwc3 *dwc)
 		goto err0;
 	}
 
-	dwc->ep0_trb = dma_alloc_coherent(dwc->dev, sizeof(*dwc->ep0_trb) * 2,
+	dwc->ep0_trb = dma_alloc_coherent(dwc->dev, sizeof(*dwc->ep0_trb),
 			&dwc->ep0_trb_addr, GFP_KERNEL);
 	if (!dwc->ep0_trb) {
 		dev_err(dwc->dev, "failed to allocate ep0 trb\n");
@@ -2977,6 +2938,8 @@ int dwc3_gadget_init(struct dwc3 *dwc)
 	 */
 	dwc->gadget.quirk_ep_out_aligned_size = true;
 
+	init_completion(&dwc->reset_event);
+
 	/*
 	 * REVISIT: Here we should clear all pending IRQs to be
 	 * sure we're starting from a well known location.
@@ -3006,7 +2969,7 @@ err3:
 	kfree(dwc->setup_buf);
 
 err2:
-	dma_free_coherent(dwc->dev, sizeof(*dwc->ep0_trb) * 2,
+	dma_free_coherent(dwc->dev, sizeof(*dwc->ep0_trb),
 			dwc->ep0_trb, dwc->ep0_trb_addr);
 
 err1:
@@ -3031,7 +2994,7 @@ void dwc3_gadget_exit(struct dwc3 *dwc)
 	kfree(dwc->setup_buf);
 	kfree(dwc->zlp_buf);
 
-	dma_free_coherent(dwc->dev, sizeof(*dwc->ep0_trb) * 2,
+	dma_free_coherent(dwc->dev, sizeof(*dwc->ep0_trb),
 			dwc->ep0_trb, dwc->ep0_trb_addr);
 
 	dma_free_coherent(dwc->dev, sizeof(*dwc->ctrl_req),

@@ -12,7 +12,6 @@ struct mmc_blk_request {
 	struct mmc_command	cmd;
 	struct mmc_command	stop;
 	struct mmc_data		data;
-	int			retune_retry_done;
 };
 
 enum mmc_packed_type {
@@ -25,7 +24,7 @@ enum mmc_packed_type {
 
 struct mmc_packed {
 	struct list_head	list;
-	__le32			cmd_hdr[1024];
+	u32			cmd_hdr[1024];
 	unsigned int		blocks;
 	u8			nr_entries;
 	u8			retries;

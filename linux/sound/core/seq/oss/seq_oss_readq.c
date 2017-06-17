@@ -91,7 +91,8 @@ snd_seq_oss_readq_clear(struct seq_oss_readq *q)
 		q->head = q->tail = 0;
 	}
 	/* if someone sleeping, wake'em up */
-	wake_up(&q->midi_sleep);
+	if (waitqueue_active(&q->midi_sleep))
+		wake_up(&q->midi_sleep);
 	q->input_time = (unsigned long)-1;
 }
 
@@ -137,7 +138,8 @@ snd_seq_oss_readq_put_event(struct seq_oss_readq *q, union evrec *ev)
 	q->qlen++;
 
 	/* wake up sleeper */
-	wake_up(&q->midi_sleep);
+	if (waitqueue_active(&q->midi_sleep))
+		wake_up(&q->midi_sleep);
 
 	spin_unlock_irqrestore(&q->lock, flags);
 
@@ -220,7 +222,7 @@ snd_seq_oss_readq_put_timestamp(struct seq_oss_readq *q, unsigned long curt, int
 }
 
 
-#ifdef CONFIG_SND_PROC_FS
+#ifdef CONFIG_PROC_FS
 /*
  * proc interface
  */
@@ -231,4 +233,4 @@ snd_seq_oss_readq_info_read(struct seq_oss_readq *q, struct snd_info_buffer *buf
 		    (waitqueue_active(&q->midi_sleep) ? "sleeping":"running"),
 		    q->qlen, q->input_time);
 }
-#endif /* CONFIG_SND_PROC_FS */
+#endif /* CONFIG_PROC_FS */

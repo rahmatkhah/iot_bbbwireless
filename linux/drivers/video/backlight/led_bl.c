@@ -149,8 +149,7 @@ static int led_bl_probe(struct platform_device *pdev)
 
 	ret = led_bl_parse_dt(&pdev->dev, priv);
 	if (ret < 0) {
-		if (ret != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "failed to parse DT data\n");
+		dev_err(&pdev->dev, "failed to parse DT data\n");
 		return ret;
 	}
 

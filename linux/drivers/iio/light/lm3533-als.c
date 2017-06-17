@@ -267,7 +267,7 @@ static irqreturn_t lm3533_als_isr(int irq, void *dev_id)
 					    0,
 					    IIO_EV_TYPE_THRESH,
 					    IIO_EV_DIR_EITHER),
-		       iio_get_time_ns(indio_dev));
+		       iio_get_time_ns());
 out:
 	return IRQ_HANDLED;
 }

@@ -32,20 +32,20 @@ static char *name;
 module_param(name, charp, 0);
 MODULE_PARM_DESC(name, "Devicename (required). name=list => list all supported devices.");
 
-static unsigned int rotate;
+static unsigned rotate;
 module_param(rotate, uint, 0);
 MODULE_PARM_DESC(rotate,
 "Angle to rotate display counter clockwise: 0, 90, 180, 270");
 
-static unsigned int busnum;
+static unsigned busnum;
 module_param(busnum, uint, 0);
 MODULE_PARM_DESC(busnum, "SPI bus number (default=0)");
 
-static unsigned int cs;
+static unsigned cs;
 module_param(cs, uint, 0);
 MODULE_PARM_DESC(cs, "SPI chip select (default=0)");
 
-static unsigned int speed;
+static unsigned speed;
 module_param(speed, uint, 0);
 MODULE_PARM_DESC(speed, "SPI speed (override device default)");
 
@@ -58,7 +58,7 @@ module_param(gpios, charp, 0);
 MODULE_PARM_DESC(gpios,
 "List of gpios. Comma separated with the form: reset:23,dc:24 (when overriding the default, all gpios must be specified)");
 
-static unsigned int fps;
+static unsigned fps;
 module_param(fps, uint, 0);
 MODULE_PARM_DESC(fps, "Frames per second (override driver default)");
 
@@ -76,7 +76,7 @@ module_param(bgr, int, 0);
 MODULE_PARM_DESC(bgr,
 "BGR bit (supported by some drivers).");
 
-static unsigned int startbyte;
+static unsigned startbyte;
 module_param(startbyte, uint, 0);
 MODULE_PARM_DESC(startbyte, "Sets the Start byte used by some SPI displays.");
 
@@ -84,15 +84,15 @@ static bool custom;
 module_param(custom, bool, 0);
 MODULE_PARM_DESC(custom, "Add a custom display device. Use speed= argument to make it a SPI device, else platform_device");
 
-static unsigned int width;
+static unsigned width;
 module_param(width, uint, 0);
 MODULE_PARM_DESC(width, "Display width, used with the custom argument");
 
-static unsigned int height;
+static unsigned height;
 module_param(height, uint, 0);
 MODULE_PARM_DESC(height, "Display height, used with the custom argument");
 
-static unsigned int buswidth = 8;
+static unsigned buswidth = 8;
 module_param(buswidth, uint, 0);
 MODULE_PARM_DESC(buswidth, "Display bus width, used with the custom argument");
 
@@ -106,7 +106,7 @@ module_param(debug, ulong, 0);
 MODULE_PARM_DESC(debug,
 "level: 0-7 (the remaining 29 bits is for advanced usage)");
 
-static unsigned int verbose = 3;
+static unsigned verbose = 3;
 module_param(verbose, uint, 0);
 MODULE_PARM_DESC(verbose,
 "0 silent, >0 show gpios, >1 show devices, >2 show devices before (default=3)");
@@ -1215,8 +1215,7 @@ static struct fbtft_device_display displays[] = {
 		}
 	}, {
 		/* This should be the last item.
-		 * Used with the custom argument
-		 */
+		   Used with the custom argument */
 		.name = "",
 		.spi = &(struct spi_board_info) {
 			.modalias = "",
@@ -1255,7 +1254,7 @@ static int write_gpio16_wr_slow(struct fbtft_par *par, void *buf, size_t len)
 		"%s(len=%d): ", __func__, len);
 
 	while (len) {
-		data = *(u16 *)buf;
+		data = *(u16 *) buf;
 
 		/* Start writing by pulling down /WR */
 		gpio_set_value(par->gpio.wr, 0);
@@ -1284,7 +1283,7 @@ static int write_gpio16_wr_slow(struct fbtft_par *par, void *buf, size_t len)
 		gpio_set_value(par->gpio.wr, 1);
 
 #ifndef DO_NOT_OPTIMIZE_FBTFT_WRITE_GPIO
-		prev_data = *(u16 *)buf;
+		prev_data = *(u16 *) buf;
 #endif
 		buf += 2;
 		len -= 2;
@@ -1307,9 +1306,8 @@ static struct fbtft_gpio fbtft_device_param_gpios[MAX_GPIOS + 1] = { };
 static void fbtft_device_pdev_release(struct device *dev)
 {
 /* Needed to silence this message:
- * Device 'xxx' does not have a release() function,
- * it is broken and must be fixed
- */
+Device 'xxx' does not have a release() function, it is broken and must be fixed
+*/
 }
 
 static int spi_device_found(struct device *dev, void *data)
@@ -1348,7 +1346,7 @@ static void pr_p_devices(void)
 }
 
 #ifdef MODULE
-static void fbtft_device_spi_delete(struct spi_master *master, unsigned int cs)
+static void fbtft_device_spi_delete(struct spi_master *master, unsigned cs)
 {
 	struct device *dev;
 	char str[32];
@@ -1401,7 +1399,7 @@ static int __init fbtft_device_init(void)
 	long val;
 	int ret = 0;
 
-	if (!name) {
+	if (name == NULL) {
 #ifdef MODULE
 		pr_err("missing module parameter: 'name'\n");
 		return -EINVAL;
@@ -1418,14 +1416,14 @@ static int __init fbtft_device_init(void)
 
 	/* parse module parameter: gpios */
 	while ((p_gpio = strsep(&gpios, ","))) {
-		if (!strchr(p_gpio, ':')) {
+		if (strchr(p_gpio, ':') == NULL) {
 			pr_err("error: missing ':' in gpios parameter: %s\n",
 			       p_gpio);
 			return -EINVAL;
 		}
 		p_num = p_gpio;
 		p_name = strsep(&p_num, ":");
-		if (!p_name || !p_num) {
+		if (p_name == NULL || p_num == NULL) {
 			pr_err("something bad happened parsing gpios parameter: %s\n",
 			       p_gpio);
 			return -EINVAL;
@@ -1438,7 +1436,7 @@ static int __init fbtft_device_init(void)
 		}
 		strncpy(fbtft_device_param_gpios[i].name, p_name,
 			FBTFT_GPIO_NAME_SIZE - 1);
-		fbtft_device_param_gpios[i++].gpio = (int)val;
+		fbtft_device_param_gpios[i++].gpio = (int) val;
 		if (i == MAX_GPIOS) {
 			pr_err("gpios parameter: exceeded max array size: %d\n",
 			       MAX_GPIOS);

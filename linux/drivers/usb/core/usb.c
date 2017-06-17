@@ -444,7 +444,6 @@ struct usb_device *usb_alloc_dev(struct usb_device *parent,
 	dev->dev.type = &usb_device_type;
 	dev->dev.groups = usb_device_groups;
 	dev->dev.dma_mask = bus->controller->dma_mask;
-	dev->dev.dma_pfn_offset = bus->controller->dma_pfn_offset;
 	set_dev_node(&dev->dev, dev_to_node(bus->controller));
 	dev->state = USB_STATE_ATTACHED;
 	dev->lpm_disable_count = 1;
@@ -511,7 +510,7 @@ struct usb_device *usb_alloc_dev(struct usb_device *parent,
 	if (root_hub)	/* Root hub always ok [and always wired] */
 		dev->authorized = 1;
 	else {
-		dev->authorized = !!HCD_DEV_AUTHORIZED(usb_hcd);
+		dev->authorized = usb_hcd->authorized_default;
 		dev->wusb = usb_bus_is_wusb(bus) ? 1 : 0;
 	}
 	return dev;

@@ -101,9 +101,7 @@ xfs_fs_geometry(
 			(xfs_sb_version_hasftype(&mp->m_sb) ?
 				XFS_FSOP_GEOM_FLAGS_FTYPE : 0) |
 			(xfs_sb_version_hasfinobt(&mp->m_sb) ?
-				XFS_FSOP_GEOM_FLAGS_FINOBT : 0) |
-			(xfs_sb_version_hassparseinodes(&mp->m_sb) ?
-				XFS_FSOP_GEOM_FLAGS_SPINODES : 0);
+				XFS_FSOP_GEOM_FLAGS_FINOBT : 0);
 		geo->logsectsize = xfs_sb_version_hassector(&mp->m_sb) ?
 				mp->m_sb.sb_logsectsize : BBSIZE;
 		geo->rtsectsize = mp->m_sb.sb_blocksize;
@@ -203,7 +201,7 @@ xfs_growfs_data_private(
 	error = xfs_trans_reserve(tp, &M_RES(mp)->tr_growdata,
 				  XFS_GROWFS_SPACE_RES(mp), 0);
 	if (error) {
-		xfs_trans_cancel(tp);
+		xfs_trans_cancel(tp, 0);
 		return error;
 	}
 
@@ -250,7 +248,7 @@ xfs_growfs_data_private(
 		agf->agf_freeblks = cpu_to_be32(tmpsize);
 		agf->agf_longest = cpu_to_be32(tmpsize);
 		if (xfs_sb_version_hascrc(&mp->m_sb))
-			uuid_copy(&agf->agf_uuid, &mp->m_sb.sb_meta_uuid);
+			uuid_copy(&agf->agf_uuid, &mp->m_sb.sb_uuid);
 
 		error = xfs_bwrite(bp);
 		xfs_buf_relse(bp);
@@ -273,7 +271,7 @@ xfs_growfs_data_private(
 		if (xfs_sb_version_hascrc(&mp->m_sb)) {
 			agfl->agfl_magicnum = cpu_to_be32(XFS_AGFL_MAGIC);
 			agfl->agfl_seqno = cpu_to_be32(agno);
-			uuid_copy(&agfl->agfl_uuid, &mp->m_sb.sb_meta_uuid);
+			uuid_copy(&agfl->agfl_uuid, &mp->m_sb.sb_uuid);
 		}
 
 		agfl_bno = XFS_BUF_TO_AGFL_BNO(mp, bp);
@@ -309,7 +307,7 @@ xfs_growfs_data_private(
 		agi->agi_newino = cpu_to_be32(NULLAGINO);
 		agi->agi_dirino = cpu_to_be32(NULLAGINO);
 		if (xfs_sb_version_hascrc(&mp->m_sb))
-			uuid_copy(&agi->agi_uuid, &mp->m_sb.sb_meta_uuid);
+			uuid_copy(&agi->agi_uuid, &mp->m_sb.sb_uuid);
 		if (xfs_sb_version_hasfinobt(&mp->m_sb)) {
 			agi->agi_free_root = cpu_to_be32(XFS_FIBT_BLOCK(mp));
 			agi->agi_free_level = cpu_to_be32(1);
@@ -491,7 +489,7 @@ xfs_growfs_data_private(
 	if (dpct)
 		xfs_trans_mod_sb(tp, XFS_TRANS_SB_IMAXPCT, dpct);
 	xfs_trans_set_sync(tp);
-	error = xfs_trans_commit(tp);
+	error = xfs_trans_commit(tp, 0);
 	if (error)
 		return error;
 
@@ -559,7 +557,7 @@ xfs_growfs_data_private(
 	return saved_error ? saved_error : error;
 
  error0:
-	xfs_trans_cancel(tp);
+	xfs_trans_cancel(tp, XFS_TRANS_ABORT);
 	return error;
 }
 

@@ -1,7 +1,7 @@
 /*
  * OMAP Remote Processor driver
  *
- * Copyright (C) 2011-2016 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C) 2011-2016 Texas Instruments, Inc.
  * Copyright (C) 2011 Google, Inc.
  *
  * Ohad Ben-Cohen <ohad@wizery.com>
@@ -384,8 +384,7 @@ static void omap_rproc_kick(struct rproc *rproc, int vqid)
 	/* send the index of the triggered virtqueue in the mailbox payload */
 	ret = mbox_send_message(oproc->mbox, (void *)vqid);
 	if (ret < 0)
-		dev_err(dev, "failed to send mailbox message, status = %d\n",
-			ret);
+		dev_err(dev, "mbox_send_message failed: %d\n", ret);
 
 	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_autosuspend(dev);
@@ -724,7 +723,6 @@ out:
 	return ret;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int omap_rproc_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
@@ -812,18 +810,12 @@ out:
 	mutex_unlock(&rproc->lock);
 	return ret;
 }
-#endif /* CONFIG_PM_SLEEP */
 
 static int omap_rproc_runtime_suspend(struct device *dev)
 {
 	struct rproc *rproc = dev_get_drvdata(dev);
 	struct omap_rproc *oproc = rproc->priv;
 	int ret;
-
-	if (rproc->state == RPROC_CRASHED) {
-		dev_dbg(dev, "rproc cannot be runtime suspended when crashed!\n");
-		return -EBUSY;
-	}
 
 	if (WARN_ON(rproc->state != RPROC_RUNNING)) {
 		dev_err(dev, "rproc cannot be runtime suspended when not running!\n");
@@ -914,27 +906,27 @@ static const struct omap_rproc_dev_data dra7_rproc_dev_data[] = {
 
 static const struct of_device_id omap_rproc_of_match[] = {
 	{
-		.compatible     = "ti,omap4-dsp",
+		.compatible     = "ti,omap4-rproc-dsp",
 		.data           = &omap4_dsp_dev_data,
 	},
 	{
-		.compatible     = "ti,omap4-ipu",
+		.compatible     = "ti,omap4-rproc-ipu",
 		.data           = &omap4_ipu_dev_data,
 	},
 	{
-		.compatible     = "ti,omap5-dsp",
+		.compatible     = "ti,omap5-rproc-dsp",
 		.data           = &omap5_dsp_dev_data,
 	},
 	{
-		.compatible     = "ti,omap5-ipu",
+		.compatible     = "ti,omap5-rproc-ipu",
 		.data           = &omap5_ipu_dev_data,
 	},
 	{
-		.compatible     = "ti,dra7-dsp",
+		.compatible     = "ti,dra7-rproc-dsp",
 		.data           = dra7_rproc_dev_data,
 	},
 	{
-		.compatible     = "ti,dra7-ipu",
+		.compatible     = "ti,dra7-rproc-ipu",
 		.data           = dra7_rproc_dev_data,
 	},
 	{
@@ -956,8 +948,8 @@ static int omap_rproc_get_autosuspend_delay(struct platform_device *pdev)
 
 	data = match->data;
 
-	if (!of_device_is_compatible(np, "ti,dra7-dsp") &&
-	    !of_device_is_compatible(np, "ti,dra7-ipu")) {
+	if (!of_device_is_compatible(np, "ti,dra7-rproc-dsp") &&
+	    !of_device_is_compatible(np, "ti,dra7-rproc-ipu")) {
 		delay = data->autosuspend_delay;
 		goto out;
 	}
@@ -985,8 +977,8 @@ static const char *omap_rproc_get_firmware(struct platform_device *pdev)
 
 	data = match->data;
 
-	if (!of_device_is_compatible(np, "ti,dra7-dsp") &&
-	    !of_device_is_compatible(np, "ti,dra7-ipu"))
+	if (!of_device_is_compatible(np, "ti,dra7-rproc-dsp") &&
+	    !of_device_is_compatible(np, "ti,dra7-rproc-ipu"))
 		return data->fw_name;
 
 	for (; data && data->device_name; data++) {
@@ -1004,9 +996,9 @@ static int omap_rproc_get_boot_data(struct platform_device *pdev,
 	struct omap_rproc *oproc = rproc->priv;
 	int ret;
 
-	if (!of_device_is_compatible(np, "ti,omap4-dsp") &&
-	    !of_device_is_compatible(np, "ti,omap5-dsp") &&
-	    !of_device_is_compatible(np, "ti,dra7-dsp"))
+	if (!of_device_is_compatible(np, "ti,omap4-rproc-dsp") &&
+	    !of_device_is_compatible(np, "ti,omap5-rproc-dsp") &&
+	    !of_device_is_compatible(np, "ti,dra7-rproc-dsp"))
 		return 0;
 
 	oproc->boot_data = devm_kzalloc(&pdev->dev, sizeof(*oproc->boot_data),
@@ -1032,7 +1024,7 @@ static int omap_rproc_get_boot_data(struct platform_device *pdev,
 		return -EINVAL;
 	}
 
-	if (of_device_is_compatible(np, "ti,dra7-dsp"))
+	if (of_device_is_compatible(np, "ti,dra7-rproc-dsp"))
 		oproc->boot_data->boot_reg_shift = 10;
 
 	return 0;
@@ -1053,8 +1045,8 @@ static int omap_rproc_of_get_internal_memories(struct platform_device *pdev,
 	int i;
 
 	/* OMAP4 and OMAP5 DSPs does not have support for flat SRAM */
-	if (of_device_is_compatible(np, "ti,omap4-dsp") ||
-	    of_device_is_compatible(np, "ti,omap5-dsp"))
+	if (of_device_is_compatible(np, "ti,omap4-rproc-dsp") ||
+	    of_device_is_compatible(np, "ti,omap5-rproc-dsp"))
 		return 0;
 
 	/* XXX: add support for DRA7 DSP L1 RAMs if needed */
@@ -1084,13 +1076,13 @@ static int omap_rproc_of_get_internal_memories(struct platform_device *pdev,
 		 * memory region can be computed using the relative offset
 		 * from this base address.
 		 */
-		if (of_device_is_compatible(np, "ti,dra7-dsp") &&
+		if (of_device_is_compatible(np, "ti,dra7-rproc-dsp") &&
 		    !strcmp(mem_names[i], "l2ram")) {
 			addrp = of_get_address(dev->of_node, i, &size, NULL);
 			l4_offset = be32_to_cpu(*addrp);
 		}
 		oproc->mem[i].dev_addr =
-			of_device_is_compatible(np, "ti,dra7-dsp") ?
+			of_device_is_compatible(np, "ti,dra7-rproc-dsp") ?
 				res->start - l4_offset +
 				OMAP_RPROC_DSP_LOCAL_MEM_OFFSET :
 				OMAP_RPROC_IPU_L2RAM_DEV_ADDR;
@@ -1191,9 +1183,7 @@ static int omap_rproc_probe(struct platform_device *pdev)
 			oproc->num_wd_timers);
 		oproc->num_wd_timers = 0;
 	} else {
-		if (!timer_ops || !timer_ops->request_timer ||
-		    !timer_ops->release_timer || !timer_ops->start_timer ||
-		    !timer_ops->stop_timer || !timer_ops->get_timer_irq ||
+		if (!timer_ops || !timer_ops->get_timer_irq ||
 		    !timer_ops->ack_timer_irq) {
 			dev_err(&pdev->dev, "device does not have required watchdog timer ops\n");
 			ret = -ENODEV;
@@ -1217,26 +1207,19 @@ static int omap_rproc_probe(struct platform_device *pdev)
 
 	init_completion(&oproc->pm_comp);
 	oproc->autosuspend_delay = omap_rproc_get_autosuspend_delay(pdev);
-	if (oproc->autosuspend_delay < 0) {
-		ret = oproc->autosuspend_delay;
+	if (oproc->autosuspend_delay < 0)
 		goto free_rproc;
-	}
 
 	ret = of_property_read_u32(np, "ti,rproc-standby-info", &standby_addr);
-	if (ret || !standby_addr) {
-		ret = !standby_addr ? -EINVAL : ret;
+	if (ret || !standby_addr)
 		goto free_rproc;
-	}
 
 	oproc->standby_addr = devm_ioremap(&pdev->dev, standby_addr,
 					   sizeof(u32));
-	if (!oproc->standby_addr) {
-		ret = -ENOMEM;
+	if (!oproc->standby_addr)
 		goto free_rproc;
-	}
 
-	ret = of_reserved_mem_device_init(&pdev->dev);
-	if (ret) {
+	if (of_reserved_mem_device_init(&pdev->dev)) {
 		dev_err(&pdev->dev, "device does not have specific CMA pool\n");
 		goto free_rproc;
 	}

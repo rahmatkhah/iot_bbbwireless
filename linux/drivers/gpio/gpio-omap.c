@@ -512,9 +512,9 @@ static int omap_gpio_irq_type(struct irq_data *d, unsigned type)
 	raw_spin_unlock_irqrestore(&bank->lock, flags);
 
 	if (type & (IRQ_TYPE_LEVEL_LOW | IRQ_TYPE_LEVEL_HIGH))
-		irq_set_handler_locked(d, handle_level_irq);
+		__irq_set_handler_locked(d->irq, handle_level_irq);
 	else if (type & (IRQ_TYPE_EDGE_FALLING | IRQ_TYPE_EDGE_RISING))
-		irq_set_handler_locked(d, handle_edge_irq);
+		__irq_set_handler_locked(d->irq, handle_edge_irq);
 
 	return 0;
 
@@ -612,12 +612,51 @@ static inline void omap_set_gpio_irqenable(struct gpio_bank *bank,
 		omap_disable_gpio_irqbank(bank, BIT(offset));
 }
 
+/*
+ * Note that ENAWAKEUP needs to be enabled in GPIO_SYSCONFIG register.
+ * 1510 does not seem to have a wake-up register. If JTAG is connected
+ * to the target, system will wake up always on GPIO events. While
+ * system is running all registered GPIO interrupts need to have wake-up
+ * enabled. When system is suspended, only selected GPIO interrupts need
+ * to have wake-up enabled.
+ */
+static int omap_set_gpio_wakeup(struct gpio_bank *bank, unsigned offset,
+				int enable)
+{
+	u32 gpio_bit = BIT(offset);
+	unsigned long flags;
+
+	if (bank->non_wakeup_gpios & gpio_bit) {
+		dev_err(bank->dev,
+			"Unable to modify wakeup on non-wakeup GPIO%d\n",
+			offset);
+		return -EINVAL;
+	}
+
+	raw_spin_lock_irqsave(&bank->lock, flags);
+	if (enable)
+		bank->context.wake_en |= gpio_bit;
+	else
+		bank->context.wake_en &= ~gpio_bit;
+
+	writel_relaxed(bank->context.wake_en, bank->base + bank->regs->wkup_en);
+	raw_spin_unlock_irqrestore(&bank->lock, flags);
+
+	return 0;
+}
+
 /* Use disable_irq_wake() and enable_irq_wake() functions from drivers */
 static int omap_gpio_wake_enable(struct irq_data *d, unsigned int enable)
 {
 	struct gpio_bank *bank = omap_irq_data_get_bank(d);
+	unsigned offset = d->hwirq;
+	int ret;
 
-	return irq_set_irq_wake(bank->irq, enable);
+	ret = omap_set_gpio_wakeup(bank, offset, enable);
+	if (!ret)
+		ret = irq_set_irq_wake(bank->irq, enable);
+
+	return ret;
 }
 
 static int omap_gpio_request(struct gpio_chip *chip, unsigned offset)
@@ -633,7 +672,16 @@ static int omap_gpio_request(struct gpio_chip *chip, unsigned offset)
 		pm_runtime_get_sync(bank->dev);
 
 	raw_spin_lock_irqsave(&bank->lock, flags);
+
+	/* Set trigger to none. You need to enable the desired trigger with
+	 * request_irq() or set_irq_type(). Only do this if the IRQ line has
+	 * not already been requested.
+	 */
+	if (!LINE_USED(bank->irq_usage, offset))
+		omap_set_gpio_triggering(bank, offset, IRQ_TYPE_NONE);
+
 	omap_enable_gpio_module(bank, offset);
+
 	bank->mod_usage |= BIT(offset);
 	raw_spin_unlock_irqrestore(&bank->lock, flags);
 
@@ -1083,6 +1131,8 @@ static int omap_gpio_chip_init(struct gpio_bank *bank, struct irq_chip *irqc)
 	/* MPUIO is a bit different, reading IRQ status clears it */
 	if (bank->is_mpuio) {
 		irqc->irq_ack = dummy_irq_chip.irq_ack;
+		irqc->irq_mask = irq_gc_mask_set_bit;
+		irqc->irq_unmask = irq_gc_mask_clr_bit;
 		if (!bank->regs->wkup_en)
 			irqc->irq_set_wake = NULL;
 	}
@@ -1146,7 +1196,6 @@ static int omap_gpio_probe(struct platform_device *pdev)
 	irqc->irq_bus_lock = omap_gpio_irq_bus_lock,
 	irqc->irq_bus_sync_unlock = gpio_irq_bus_sync_unlock,
 	irqc->name = dev_name(&pdev->dev);
-	irqc->flags = IRQCHIP_MASK_ON_SUSPEND;
 
 	bank->irq = platform_get_irq(pdev, 0);
 	if (bank->irq <= 0) {
@@ -1355,6 +1404,8 @@ static int omap_gpio_runtime_resume(struct device *dev)
 	} else {
 		c = bank->get_context_loss_count(bank->dev);
 		if (c != bank->context_loss_count) {
+			omap_gpio_restore_context(bank);
+		} else {
 			raw_spin_unlock_irqrestore(&bank->lock, flags);
 			return 0;
 		}

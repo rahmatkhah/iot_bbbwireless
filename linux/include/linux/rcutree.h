@@ -31,7 +31,9 @@
 #define __LINUX_RCUTREE_H
 
 void rcu_note_context_switch(void);
-int rcu_needs_cpu(u64 basem, u64 *nextevt);
+#ifndef CONFIG_RCU_NOCB_CPU_ALL
+int rcu_needs_cpu(unsigned long *delta_jiffies);
+#endif /* #ifndef CONFIG_RCU_NOCB_CPU_ALL */
 void rcu_cpu_stall_reset(void);
 
 /*
@@ -52,7 +54,7 @@ void synchronize_rcu_bh(void);
 void synchronize_sched_expedited(void);
 void synchronize_rcu_expedited(void);
 
-void kfree_call_rcu(struct rcu_head *head, rcu_callback_t func);
+void kfree_call_rcu(struct rcu_head *head, void (*func)(struct rcu_head *rcu));
 
 /**
  * synchronize_rcu_bh_expedited - Brute-force RCU-bh grace period
@@ -84,8 +86,6 @@ void rcu_barrier_bh(void);
 void rcu_barrier_sched(void);
 unsigned long get_state_synchronize_rcu(void);
 void cond_synchronize_rcu(unsigned long oldstate);
-unsigned long get_state_synchronize_sched(void);
-void cond_synchronize_sched(unsigned long oldstate);
 
 extern unsigned long rcutorture_testseq;
 extern unsigned long rcutorture_vernum;
@@ -98,11 +98,6 @@ void show_rcu_gp_kthreads(void);
 
 void rcu_force_quiescent_state(void);
 void rcu_sched_force_quiescent_state(void);
-
-void rcu_idle_enter(void);
-void rcu_idle_exit(void);
-void rcu_irq_enter(void);
-void rcu_irq_exit(void);
 
 void exit_rcu(void);
 

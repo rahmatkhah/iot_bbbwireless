@@ -25,33 +25,32 @@
 	};
 
 	leds {
+		compatible = "gpio-leds";
 		pinctrl-names = "default";
 		pinctrl-0 = <&userled_pins>;
 
-		compatible = "gpio-leds";
-
-		led@0 {
+		led0 {
 			label = "arduino_tre:yel:usr0";
 			gpios = <&gpio1 21 0>;
 			linux,default-trigger = "mmc0";
 			default-state = "off";
 		};
 
-		led@1 {
+		led1 {
 			label = "arduino_tre:red:usr1";
 			gpios = <&gpio1 22 0>;
 			linux,default-trigger = "none";
 			default-state = "off";
 		};
 
-		led@2 {
+		led2 {
 			label = "arduino_tre:blu:usr2";
 			gpios = <&gpio1 23 0>;
 			linux,default-trigger = "none";
 			default-state = "off";
 		};
 
-		led@3 {
+		led3 {
 			label = "arduino_tre:grn:usr3";
 			gpios = <&gpio1 24 0>;
 			linux,default-trigger = "cpu0";
@@ -86,17 +85,6 @@
 		regulator-name = "vmmcsd_fixed";
 		regulator-min-microvolt = <3300000>;
 		regulator-max-microvolt = <3300000>;
-	};
-};
-
-&cpu0_opp_table {
-	/*
-	 * All PG 2.0 silicon may not support 1GHz but some of the early
-	 * BeagleBone Blacks have PG 2.0 silicon which is guaranteed
-	 * to support 1GHz OPP so enable it for PG 2.0 on this board.
-	 */
-	oppnitro@1000000000 {
-		opp-supported-hw = <0x06 0x0100>;
 	};
 };
 
@@ -395,6 +383,10 @@
 	status = "okay";
 };
 
+&sgx {
+	status = "okay";
+};
+
 &uart0 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&uart0_pins>;
@@ -453,19 +445,16 @@
 	};
 };
 
+#include "tps65217.dtsi"
+
 &tps {
-	compatible = "ti,tps65217";
 	ti,pmic-shutdown-controller;
 
 	interrupt-parent = <&intc>;
 	interrupts = <7>;	/* NNMI */
 
 	regulators {
-		#address-cells = <1>;
-		#size-cells = <0>;
-
 		dcdc1_reg: regulator@0 {
-			reg = <0>;
 			regulator-name = "vdd_ddr";
 			regulator-min-microvolt = <1350000>;
 			regulator-max-microvolt = <1350000>;
@@ -474,8 +463,7 @@
 		};
 
 		dcdc2_reg: regulator@1 {
-			reg = <1>;
-			/* VDD_MPU voltage limits 0.95V - 1.26V with +/-4% tolerance */
+			/* VDD_MPU voltage limits 0.925V - 1.325V with +/-4% tolerance */
 			regulator-name = "vdd_mpu";
 			regulator-min-microvolt = <925000>;
 			regulator-max-microvolt = <1325000>;
@@ -484,8 +472,7 @@
 		};
 
 		dcdc3_reg: regulator@2 {
-			reg = <2>;
-			/* VDD_CORE voltage limits 0.95V - 1.1V with +/-4% tolerance */
+			/* VDD_CORE voltage limits 0.925V - 1.15V with +/-4% tolerance */
 			regulator-name = "vdd_core";
 			regulator-min-microvolt = <925000>;
 			regulator-max-microvolt = <1150000>;
@@ -494,24 +481,20 @@
 		};
 
 		ldo1_reg: regulator@3 {
-			reg = <3>;
 			regulator-always-on;
 		};
 
 		ldo2_reg: regulator@4 {
-			reg = <4>;
 			regulator-always-on;
 		};
 
 		ldo3_reg: regulator@5 {
-			reg = <5>;
 			regulator-min-microvolt = <1800000>;
 			regulator-max-microvolt = <1800000>;
 			regulator-always-on;
 		};
 
 		ldo4_reg: regulator@6 {
-			reg = <6>;
 			regulator-always-on;
 		};
 
@@ -583,9 +566,5 @@
 };
 
 &aes {
-	status = "okay";
-};
-
-&sgx {
 	status = "okay";
 };

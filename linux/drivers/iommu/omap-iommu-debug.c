@@ -135,9 +135,8 @@ __dump_tlb_entries(struct omap_iommu *obj, struct cr_regs *crs, int num)
 static ssize_t iotlb_dump_cr(struct omap_iommu *obj, struct cr_regs *cr,
 			     struct seq_file *s)
 {
-	seq_printf(s, "%08x %08x %01x\n", cr->cam, cr->ram,
-		   (cr->cam & MMU_CAM_P) ? 1 : 0);
-	return 0;
+	return seq_printf(s, "%08x %08x %01x\n", cr->cam, cr->ram,
+			  (cr->cam & MMU_CAM_P) ? 1 : 0);
 }
 
 static size_t omap_dump_tlb_entries(struct omap_iommu *obj, struct seq_file *s)

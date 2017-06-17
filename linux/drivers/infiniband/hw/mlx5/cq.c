@@ -33,7 +33,6 @@
 #include <linux/kref.h>
 #include <rdma/ib_umem.h>
 #include <rdma/ib_user_verbs.h>
-#include <rdma/ib_cache.h>
 #include "mlx5_ib.h"
 #include "user.h"
 
@@ -109,8 +108,8 @@ static enum ib_wc_opcode get_umr_comp(struct mlx5_ib_wq *wq, int idx)
 	case IB_WR_LOCAL_INV:
 		return IB_WC_LOCAL_INV;
 
-	case IB_WR_REG_MR:
-		return IB_WC_REG_MR;
+	case IB_WR_FAST_REG_MR:
+		return IB_WC_FAST_REG_MR;
 
 	default:
 		pr_warn("unknown completion status\n");
@@ -228,14 +227,7 @@ static void handle_responder(struct ib_wc *wc, struct mlx5_cqe64 *cqe,
 	wc->dlid_path_bits = cqe->ml_path;
 	g = (be32_to_cpu(cqe->flags_rqpn) >> 28) & 3;
 	wc->wc_flags |= g ? IB_WC_GRH : 0;
-	if (unlikely(is_qp1(qp->ibqp.qp_type))) {
-		u16 pkey = be32_to_cpu(cqe->imm_inval_pkey) & 0xffff;
-
-		ib_find_cached_pkey(&dev->ib_dev, qp->port, pkey,
-				    &wc->pkey_index);
-	} else {
-		wc->pkey_index = 0;
-	}
+	wc->pkey_index     = be32_to_cpu(cqe->imm_inval_pkey) & 0xffff;
 }
 
 static void dump_cqe(struct mlx5_ib_dev *dev, struct mlx5_err_cqe *cqe)
@@ -598,7 +590,8 @@ static int alloc_cq_buf(struct mlx5_ib_dev *dev, struct mlx5_ib_cq_buf *buf,
 {
 	int err;
 
-	err = mlx5_buf_alloc(dev->mdev, nent * cqe_size, &buf->buf);
+	err = mlx5_buf_alloc(dev->mdev, nent * cqe_size,
+			     PAGE_SIZE * 2, &buf->buf);
 	if (err)
 		return err;
 
@@ -743,32 +736,25 @@ static void destroy_cq_kernel(struct mlx5_ib_dev *dev, struct mlx5_ib_cq *cq)
 	mlx5_db_free(dev->mdev, &cq->db);
 }
 
-struct ib_cq *mlx5_ib_create_cq(struct ib_device *ibdev,
-				const struct ib_cq_init_attr *attr,
-				struct ib_ucontext *context,
+struct ib_cq *mlx5_ib_create_cq(struct ib_device *ibdev, int entries,
+				int vector, struct ib_ucontext *context,
 				struct ib_udata *udata)
 {
-	int entries = attr->cqe;
-	int vector = attr->comp_vector;
 	struct mlx5_create_cq_mbox_in *cqb = NULL;
 	struct mlx5_ib_dev *dev = to_mdev(ibdev);
 	struct mlx5_ib_cq *cq;
 	int uninitialized_var(index);
 	int uninitialized_var(inlen);
 	int cqe_size;
-	unsigned int irqn;
+	int irqn;
 	int eqn;
 	int err;
 
-	if (attr->flags)
-		return ERR_PTR(-EINVAL);
-
-	if (entries < 0 ||
-	    (entries > (1 << MLX5_CAP_GEN(dev->mdev, log_max_cq_sz))))
+	if (entries < 0)
 		return ERR_PTR(-EINVAL);
 
 	entries = roundup_pow_of_two(entries + 1);
-	if (entries > (1 << MLX5_CAP_GEN(dev->mdev, log_max_cq_sz)))
+	if (entries > dev->mdev->caps.gen.max_cqes)
 		return ERR_PTR(-EINVAL);
 
 	cq = kzalloc(sizeof(*cq), GFP_KERNEL);
@@ -787,7 +773,8 @@ struct ib_cq *mlx5_ib_create_cq(struct ib_device *ibdev,
 		if (err)
 			goto err_create;
 	} else {
-		cqe_size = cache_line_size() == 128 ? 128 : 64;
+		/* for now choose 64 bytes till we have a proper interface */
+		cqe_size = 64;
 		err = create_cq_kernel(dev, cq, entries, cqe_size, &cqb,
 				       &index, &inlen);
 		if (err)
@@ -934,7 +921,7 @@ int mlx5_ib_modify_cq(struct ib_cq *cq, u16 cq_count, u16 cq_period)
 	int err;
 	u32 fsel;
 
-	if (!MLX5_CAP_GEN(dev->mdev, cq_moderation))
+	if (!(dev->mdev->caps.gen.flags & MLX5_DEV_CAP_FLAG_CQ_MODER))
 		return -ENOSYS;
 
 	in = kzalloc(sizeof(*in), GFP_KERNEL);
@@ -1089,21 +1076,16 @@ int mlx5_ib_resize_cq(struct ib_cq *ibcq, int entries, struct ib_udata *udata)
 	int uninitialized_var(cqe_size);
 	unsigned long flags;
 
-	if (!MLX5_CAP_GEN(dev->mdev, cq_resize)) {
+	if (!(dev->mdev->caps.gen.flags & MLX5_DEV_CAP_FLAG_RESIZE_CQ)) {
 		pr_info("Firmware does not support resize CQ\n");
 		return -ENOSYS;
 	}
 
-	if (entries < 1 ||
-	    entries > (1 << MLX5_CAP_GEN(dev->mdev, log_max_cq_sz))) {
-		mlx5_ib_warn(dev, "wrong entries number %d, max %d\n",
-			     entries,
-			     1 << MLX5_CAP_GEN(dev->mdev, log_max_cq_sz));
+	if (entries < 1)
 		return -EINVAL;
-	}
 
 	entries = roundup_pow_of_two(entries + 1);
-	if (entries > (1 << MLX5_CAP_GEN(dev->mdev, log_max_cq_sz)) + 1)
+	if (entries > dev->mdev->caps.gen.max_cqes + 1)
 		return -EINVAL;
 
 	if (entries == ibcq->cqe + 1)

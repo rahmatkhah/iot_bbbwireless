@@ -44,6 +44,11 @@ static struct inode *debugfs_get_inode(struct super_block *sb)
 	return inode;
 }
 
+static inline int debugfs_positive(struct dentry *dentry)
+{
+	return d_really_is_positive(dentry) && !d_unhashed(dentry);
+}
+
 struct debugfs_mount_opts {
 	kuid_t uid;
 	kgid_t gid;
@@ -169,7 +174,7 @@ static void debugfs_evict_inode(struct inode *inode)
 	truncate_inode_pages_final(&inode->i_data);
 	clear_inode(inode);
 	if (S_ISLNK(inode->i_mode))
-		kfree(inode->i_link);
+		kfree(inode->i_private);
 }
 
 static const struct super_operations debugfs_super_operations = {
@@ -510,8 +515,8 @@ struct dentry *debugfs_create_symlink(const char *name, struct dentry *parent,
 		return failed_creating(dentry);
 	}
 	inode->i_mode = S_IFLNK | S_IRWXUGO;
-	inode->i_op = &simple_symlink_inode_operations;
-	inode->i_link = link;
+	inode->i_op = &debugfs_link_operations;
+	inode->i_private = link;
 	d_instantiate(dentry, inode);
 	return end_creating(dentry);
 }
@@ -521,7 +526,7 @@ static int __debugfs_remove(struct dentry *dentry, struct dentry *parent)
 {
 	int ret = 0;
 
-	if (simple_positive(dentry)) {
+	if (debugfs_positive(dentry)) {
 		dget(dentry);
 		if (d_is_dir(dentry))
 			ret = simple_rmdir(d_inode(parent), dentry);
@@ -537,8 +542,7 @@ static int __debugfs_remove(struct dentry *dentry, struct dentry *parent)
 /**
  * debugfs_remove - removes a file or directory from the debugfs filesystem
  * @dentry: a pointer to a the dentry of the file or directory to be
- *          removed.  If this parameter is NULL or an error value, nothing
- *          will be done.
+ *          removed.
  *
  * This function removes a file or directory in debugfs that was previously
  * created with a call to another debugfs function (like
@@ -570,8 +574,7 @@ EXPORT_SYMBOL_GPL(debugfs_remove);
 
 /**
  * debugfs_remove_recursive - recursively removes a directory
- * @dentry: a pointer to a the dentry of the directory to be removed.  If this
- *          parameter is NULL or an error value, nothing will be done.
+ * @dentry: a pointer to a the dentry of the directory to be removed.
  *
  * This function recursively removes a directory tree in debugfs that
  * was previously created with a call to another debugfs function
@@ -603,7 +606,7 @@ void debugfs_remove_recursive(struct dentry *dentry)
 	 */
 	spin_lock(&parent->d_lock);
 	list_for_each_entry(child, &parent->d_subdirs, d_child) {
-		if (!simple_positive(child))
+		if (!debugfs_positive(child))
 			continue;
 
 		/* perhaps simple_empty(child) makes more sense */
@@ -624,7 +627,7 @@ void debugfs_remove_recursive(struct dentry *dentry)
 		 * from d_subdirs. When releasing the parent->d_lock we can
 		 * no longer trust that the next pointer is valid.
 		 * Restart the loop. We'll skip this one with the
-		 * simple_positive() check.
+		 * debugfs_positive() check.
 		 */
 		goto loop;
 	}

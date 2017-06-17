@@ -664,7 +664,6 @@ static int rsi_mac80211_set_key(struct ieee80211_hw *hw,
  * @tid: Traffic identifier.
  * @ssn: Pointer to ssn value.
  * @buf_size: Buffer size (for kernel version > 2.6.38).
- * @amsdu: is AMSDU in AMPDU allowed
  *
  * Return: status: 0 on success, negative error code on failure.
  */
@@ -674,8 +673,7 @@ static int rsi_mac80211_ampdu_action(struct ieee80211_hw *hw,
 				     struct ieee80211_sta *sta,
 				     unsigned short tid,
 				     unsigned short *ssn,
-				     unsigned char buf_size,
-				     bool amsdu)
+				     unsigned char buf_size)
 {
 	int status = -EOPNOTSUPP;
 	struct rsi_hw *adapter = hw->priv;
@@ -1064,9 +1062,10 @@ int rsi_mac80211_attach(struct rsi_common *common)
 	hw->priv = adapter;
 	adapter->hw = hw;
 
-	ieee80211_hw_set(hw, SIGNAL_DBM);
-	ieee80211_hw_set(hw, HAS_RATE_CONTROL);
-	ieee80211_hw_set(hw, AMPDU_AGGREGATION);
+	hw->flags = IEEE80211_HW_SIGNAL_DBM |
+		    IEEE80211_HW_HAS_RATE_CONTROL |
+		    IEEE80211_HW_AMPDU_AGGREGATION |
+		    0;
 
 	hw->queues = MAX_HW_QUEUES;
 	hw->extra_tx_headroom = RSI_NEEDED_HEADROOM;

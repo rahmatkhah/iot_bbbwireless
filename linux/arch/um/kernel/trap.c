@@ -7,7 +7,6 @@
 #include <linux/sched.h>
 #include <linux/hardirq.h>
 #include <linux/module.h>
-#include <linux/uaccess.h>
 #include <asm/current.h>
 #include <asm/pgtable.h>
 #include <asm/tlbflush.h>
@@ -173,7 +172,7 @@ static void bad_segv(struct faultinfo fi, unsigned long ip)
 void fatal_sigsegv(void)
 {
 	force_sigsegv(SIGSEGV, current);
-	do_signal(&current->thread.regs);
+	do_signal();
 	/*
 	 * This is to tell gcc that we're not returning - do_signal
 	 * can, in general, return, but in this case, it's not, since
@@ -219,11 +218,6 @@ unsigned long segv(struct faultinfo fi, unsigned long ip, int is_user,
 	else if (current->mm == NULL) {
 		show_regs(container_of(regs, struct pt_regs, regs));
 		panic("Segfault with no mm");
-	}
-	else if (!is_user && address > PAGE_SIZE && address < TASK_SIZE) {
-		show_regs(container_of(regs, struct pt_regs, regs));
-		panic("Kernel tried to access user memory at addr 0x%lx, ip 0x%lx",
-		       address, ip);
 	}
 
 	if (SEGV_IS_FIXABLE(&fi))

@@ -64,8 +64,10 @@ ieee802154_get_dev(struct net *net, const struct ieee802154_addr *addr)
 			if (tmp->type != ARPHRD_IEEE802154)
 				continue;
 
-			pan_id = tmp->ieee802154_ptr->pan_id;
-			short_addr = tmp->ieee802154_ptr->short_addr;
+			pan_id = ieee802154_mlme_ops(tmp)->get_pan_id(tmp);
+			short_addr =
+				ieee802154_mlme_ops(tmp)->get_short_addr(tmp);
+
 			if (pan_id == addr->pan_id &&
 			    short_addr == addr->short_addr) {
 				dev = tmp;
@@ -226,9 +228,15 @@ static int raw_bind(struct sock *sk, struct sockaddr *_uaddr, int len)
 		goto out;
 	}
 
+	if (dev->type != ARPHRD_IEEE802154) {
+		err = -ENODEV;
+		goto out_put;
+	}
+
 	sk->sk_bound_dev_if = dev->ifindex;
 	sk_dst_reset(sk);
 
+out_put:
 	dev_put(dev);
 out:
 	release_sock(sk);
@@ -273,12 +281,12 @@ static int raw_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 		goto out;
 	}
 
-	mtu = IEEE802154_MTU;
+	mtu = dev->mtu;
 	pr_debug("name = %s, mtu = %u\n", dev->name, mtu);
 
 	if (size > mtu) {
 		pr_debug("size = %Zu, mtu = %u\n", size, mtu);
-		err = -EMSGSIZE;
+		err = -EINVAL;
 		goto out_dev;
 	}
 
@@ -637,7 +645,7 @@ static int dgram_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 		err = -ENXIO;
 		goto out;
 	}
-	mtu = IEEE802154_MTU;
+	mtu = dev->mtu;
 	pr_debug("name = %s, mtu = %u\n", dev->name, mtu);
 
 	if (size > mtu) {
@@ -676,8 +684,8 @@ static int dgram_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 	cb->seclevel = ro->seclevel;
 	cb->seclevel_override = ro->seclevel_override;
 
-	err = wpan_dev_hard_header(skb, dev, &dst_addr,
-				   ro->bound ? &ro->src_addr : NULL, size);
+	err = dev_hard_header(skb, dev, ETH_P_IEEE802154, &dst_addr,
+			      ro->bound ? &ro->src_addr : NULL, size);
 	if (err < 0)
 		goto out_skb;
 
@@ -795,9 +803,9 @@ static int ieee802154_dgram_deliver(struct net_device *dev, struct sk_buff *skb)
 	/* Data frame processing */
 	BUG_ON(dev->type != ARPHRD_IEEE802154);
 
-	pan_id = dev->ieee802154_ptr->pan_id;
-	short_addr = dev->ieee802154_ptr->short_addr;
-	hw_addr = dev->ieee802154_ptr->extended_addr;
+	pan_id = ieee802154_mlme_ops(dev)->get_pan_id(dev);
+	short_addr = ieee802154_mlme_ops(dev)->get_short_addr(dev);
+	hw_addr = ieee802154_devaddr_from_raw(dev->dev_addr);
 
 	read_lock(&dgram_lock);
 	sk_for_each(sk, &dgram_head) {
@@ -1012,7 +1020,7 @@ static int ieee802154_create(struct net *net, struct socket *sock,
 	}
 
 	rc = -ENOMEM;
-	sk = sk_alloc(net, PF_IEEE802154, GFP_KERNEL, proto, kern);
+	sk = sk_alloc(net, PF_IEEE802154, GFP_KERNEL, proto);
 	if (!sk)
 		goto out;
 	rc = 0;

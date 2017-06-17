@@ -10,7 +10,6 @@
 /dts-v1/;
 
 #include "bcm47081.dtsi"
-#include "bcm5301x-nand-cs0-bch8.dtsi"
 
 / {
 	compatible = "buffalo,wzr-600dhp2", "brcm,bcm47081", "brcm,bcm4708";
@@ -121,8 +120,4 @@
 			gpios = <&chipcommon 15 GPIO_ACTIVE_LOW>;
 		};
 	};
-};
-
-&uart0 {
-	status = "okay";
 };

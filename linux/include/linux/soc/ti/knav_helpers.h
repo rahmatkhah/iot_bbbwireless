@@ -89,7 +89,6 @@ static inline void knav_dma_set_words(u32 *words, int num_words, u32 *desc)
 	for (i = 0; i < num_words; i++)
 		desc[i] = words[i];
 }
-
 #define knav_queue_get_id(q)	knav_queue_device_control(q, \
 				KNAV_QUEUE_GET_ID, (unsigned long)NULL)
 

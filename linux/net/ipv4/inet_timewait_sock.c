@@ -18,6 +18,28 @@
 
 
 /**
+ *	inet_twsk_unhash - unhash a timewait socket from established hash
+ *	@tw: timewait socket
+ *
+ *	unhash a timewait socket from established hash, if hashed.
+ *	ehash lock must be held by caller.
+ *	Returns 1 if caller should call inet_twsk_put() after lock release.
+ */
+int inet_twsk_unhash(struct inet_timewait_sock *tw)
+{
+	if (hlist_nulls_unhashed(&tw->tw_node))
+		return 0;
+
+	hlist_nulls_del_rcu(&tw->tw_node);
+	sk_nulls_node_init(&tw->tw_node);
+	/*
+	 * We cannot call inet_twsk_put() ourself under lock,
+	 * caller must call it for us.
+	 */
+	return 1;
+}
+
+/**
  *	inet_twsk_bind_unhash - unhash a timewait socket from bind hash
  *	@tw: timewait socket
  *	@hashinfo: hashinfo pointer
@@ -26,29 +48,35 @@
  *	bind hash lock must be held by caller.
  *	Returns 1 if caller should call inet_twsk_put() after lock release.
  */
-void inet_twsk_bind_unhash(struct inet_timewait_sock *tw,
+int inet_twsk_bind_unhash(struct inet_timewait_sock *tw,
 			  struct inet_hashinfo *hashinfo)
 {
 	struct inet_bind_bucket *tb = tw->tw_tb;
 
 	if (!tb)
-		return;
+		return 0;
 
 	__hlist_del(&tw->tw_bind_node);
 	tw->tw_tb = NULL;
 	inet_bind_bucket_destroy(hashinfo->bind_bucket_cachep, tb);
-	__sock_put((struct sock *)tw);
+	/*
+	 * We cannot call inet_twsk_put() ourself under lock,
+	 * caller must call it for us.
+	 */
+	return 1;
 }
 
 /* Must be called with locally disabled BHs. */
 static void inet_twsk_kill(struct inet_timewait_sock *tw)
 {
 	struct inet_hashinfo *hashinfo = tw->tw_dr->hashinfo;
-	spinlock_t *lock = inet_ehash_lockp(hashinfo, tw->tw_hash);
 	struct inet_bind_hashbucket *bhead;
+	int refcnt;
+	/* Unlink from established hashes. */
+	spinlock_t *lock = inet_ehash_lockp(hashinfo, tw->tw_hash);
 
 	spin_lock(lock);
-	sk_nulls_del_node_init_rcu((struct sock *)tw);
+	refcnt = inet_twsk_unhash(tw);
 	spin_unlock(lock);
 
 	/* Disassociate with bind bucket. */
@@ -56,9 +84,11 @@ static void inet_twsk_kill(struct inet_timewait_sock *tw)
 			hashinfo->bhash_size)];
 
 	spin_lock(&bhead->lock);
-	inet_twsk_bind_unhash(tw, hashinfo);
+	refcnt += inet_twsk_bind_unhash(tw, hashinfo);
 	spin_unlock(&bhead->lock);
 
+	BUG_ON(refcnt >= atomic_read(&tw->tw_refcnt));
+	atomic_sub(refcnt, &tw->tw_refcnt);
 	atomic_dec(&tw->tw_dr->tw_count);
 	inet_twsk_put(tw);
 }
@@ -142,7 +172,7 @@ void __inet_twsk_hashdance(struct inet_timewait_sock *tw, struct sock *sk,
 }
 EXPORT_SYMBOL_GPL(__inet_twsk_hashdance);
 
-static void tw_timer_handler(unsigned long data)
+void tw_timer_handler(unsigned long data)
 {
 	struct inet_timewait_sock *tw = (struct inet_timewait_sock *)data;
 
@@ -207,17 +237,13 @@ EXPORT_SYMBOL_GPL(inet_twsk_alloc);
  * tcp_input.c to verify this.
  */
 
-/* This is for handling early-kills of TIME_WAIT sockets.
- * Warning : consume reference.
- * Caller should not access tw anymore.
- */
-void inet_twsk_deschedule_put(struct inet_timewait_sock *tw)
+/* This is for handling early-kills of TIME_WAIT sockets. */
+void inet_twsk_deschedule(struct inet_timewait_sock *tw)
 {
 	if (del_timer_sync(&tw->tw_timer))
 		inet_twsk_kill(tw);
-	inet_twsk_put(tw);
 }
-EXPORT_SYMBOL(inet_twsk_deschedule_put);
+EXPORT_SYMBOL(inet_twsk_deschedule);
 
 void __inet_twsk_schedule(struct inet_timewait_sock *tw, int timeo, bool rearm)
 {
@@ -289,8 +315,9 @@ restart:
 
 			rcu_read_unlock();
 			local_bh_disable();
-			inet_twsk_deschedule_put(tw);
+			inet_twsk_deschedule(tw);
 			local_bh_enable();
+			inet_twsk_put(tw);
 			goto restart_rcu;
 		}
 		/* If the nulls value we got at the end of this lookup is

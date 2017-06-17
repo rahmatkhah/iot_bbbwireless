@@ -295,8 +295,7 @@ static int rawv6_bind(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 		 * unspecified and mapped address have a v4 equivalent.
 		 */
 		v4addr = LOOPBACK4_IPV6;
-		if (!(addr_type & IPV6_ADDR_MULTICAST) &&
-		    !sock_net(sk)->ipv6.sysctl.ip_nonlocal_bind) {
+		if (!(addr_type & IPV6_ADDR_MULTICAST))	{
 			err = -EADDRNOTAVAIL;
 			if (!ipv6_chk_addr(sock_net(sk), &addr->sin6_addr,
 					   dev, 0)) {
@@ -589,11 +588,7 @@ static int rawv6_push_pending_frames(struct sock *sk, struct flowi6 *fl6,
 	}
 
 	offset += skb_transport_offset(skb);
-	err = skb_copy_bits(skb, offset, &csum, 2);
-	if (err < 0) {
-		ip6_flush_pending_frames(sk);
-		goto out;
-	}
+	BUG_ON(skb_copy_bits(skb, offset, &csum, 2));
 
 	/* in case cksum was not initialized */
 	if (unlikely(csum))
@@ -618,7 +613,6 @@ static int rawv6_send_hdrinc(struct sock *sk, struct msghdr *msg, int length,
 			unsigned int flags)
 {
 	struct ipv6_pinfo *np = inet6_sk(sk);
-	struct net *net = sock_net(sk);
 	struct ipv6hdr *iph;
 	struct sk_buff *skb;
 	int err;
@@ -630,8 +624,6 @@ static int rawv6_send_hdrinc(struct sock *sk, struct msghdr *msg, int length,
 		ipv6_local_error(sk, EMSGSIZE, fl6, rt->dst.dev->mtu);
 		return -EMSGSIZE;
 	}
-	if (length < sizeof(struct ipv6hdr))
-		return -EINVAL;
 	if (flags&MSG_PROBE)
 		goto out;
 
@@ -659,9 +651,9 @@ static int rawv6_send_hdrinc(struct sock *sk, struct msghdr *msg, int length,
 	if (err)
 		goto error_fault;
 
-	IP6_UPD_PO_STATS(net, rt->rt6i_idev, IPSTATS_MIB_OUT, skb->len);
-	err = NF_HOOK(NFPROTO_IPV6, NF_INET_LOCAL_OUT, net, sk, skb,
-		      NULL, rt->dst.dev, dst_output);
+	IP6_UPD_PO_STATS(sock_net(sk), rt->rt6i_idev, IPSTATS_MIB_OUT, skb->len);
+	err = NF_HOOK(NFPROTO_IPV6, NF_INET_LOCAL_OUT, sk, skb,
+		      NULL, rt->dst.dev, dst_output_sk);
 	if (err > 0)
 		err = net_xmit_errno(err);
 	if (err)
@@ -673,7 +665,7 @@ error_fault:
 	err = -EFAULT;
 	kfree_skb(skb);
 error:
-	IP6_INC_STATS(net, rt->rt6i_idev, IPSTATS_MIB_OUTDISCARDS);
+	IP6_INC_STATS(sock_net(sk), rt->rt6i_idev, IPSTATS_MIB_OUTDISCARDS);
 	if (err == -ENOBUFS && !np->recverr)
 		err = 0;
 	return err;
@@ -875,9 +867,6 @@ static int rawv6_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 	else if (!fl6.flowi6_oif)
 		fl6.flowi6_oif = np->ucast_oif;
 	security_sk_classify_flow(sk, flowi6_to_flowi(&fl6));
-
-	if (inet->hdrincl)
-		fl6.flowi6_flags |= FLOWI_FLAG_KNOWN_NH;
 
 	dst = ip6_dst_lookup_flow(sk, &fl6, final_p);
 	if (IS_ERR(dst)) {
@@ -1146,7 +1135,8 @@ static int rawv6_ioctl(struct sock *sk, int cmd, unsigned long arg)
 		spin_lock_bh(&sk->sk_receive_queue.lock);
 		skb = skb_peek(&sk->sk_receive_queue);
 		if (skb)
-			amount = skb->len;
+			amount = skb_tail_pointer(skb) -
+				skb_transport_header(skb);
 		spin_unlock_bh(&sk->sk_receive_queue.lock);
 		return put_user(amount, (int __user *)arg);
 	}
@@ -1338,7 +1328,13 @@ static struct inet_protosw rawv6_protosw = {
 
 int __init rawv6_init(void)
 {
-	return inet6_register_protosw(&rawv6_protosw);
+	int ret;
+
+	ret = inet6_register_protosw(&rawv6_protosw);
+	if (ret)
+		goto out;
+out:
+	return ret;
 }
 
 void rawv6_exit(void)

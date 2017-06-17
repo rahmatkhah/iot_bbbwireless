@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2012-2015 Broadcom Corporation
+# Copyright (C) 2012-2014 Broadcom Corporation
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License as
@@ -12,9 +12,6 @@
 
 # Cygnus
 obj-$(CONFIG_ARCH_BCM_CYGNUS) +=  bcm_cygnus.o
-
-# Northstar Plus
-obj-$(CONFIG_ARCH_BCM_NSP) += bcm_nsp.o
 
 # BCM281XX
 obj-$(CONFIG_ARCH_BCM_281XX)	+= board_bcm281xx.o
@@ -41,10 +38,7 @@ obj-$(CONFIG_ARCH_BCM2835)	+= board_bcm2835.o
 obj-$(CONFIG_ARCH_BCM_5301X)	+= bcm_5301x.o
 
 # BCM63XXx
-ifeq ($(CONFIG_ARCH_BCM_63XX),y)
-obj-y				+= bcm63xx.o
-obj-$(CONFIG_SMP)		+= bcm63xx_smp.o bcm63xx_pmb.o
-endif
+obj-$(CONFIG_ARCH_BCM_63XX)	:= bcm63xx.o
 
 ifeq ($(CONFIG_ARCH_BRCMSTB),y)
 CFLAGS_platsmp-brcmstb.o	+= -march=armv7-a

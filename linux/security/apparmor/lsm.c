@@ -12,7 +12,7 @@
  * License.
  */
 
-#include <linux/lsm_hooks.h>
+#include <linux/security.h>
 #include <linux/moduleparam.h>
 #include <linux/mm.h>
 #include <linux/mman.h>
@@ -96,11 +96,19 @@ static void apparmor_cred_transfer(struct cred *new, const struct cred *old)
 static int apparmor_ptrace_access_check(struct task_struct *child,
 					unsigned int mode)
 {
+	int error = cap_ptrace_access_check(child, mode);
+	if (error)
+		return error;
+
 	return aa_ptrace(current, child, mode);
 }
 
 static int apparmor_ptrace_traceme(struct task_struct *parent)
 {
+	int error = cap_ptrace_traceme(parent);
+	if (error)
+		return error;
+
 	return aa_ptrace(parent, current, PTRACE_MODE_ATTACH);
 }
 
@@ -115,10 +123,10 @@ static int apparmor_capget(struct task_struct *target, kernel_cap_t *effective,
 	cred = __task_cred(target);
 	profile = aa_cred_profile(cred);
 
-	/*
-	 * cap_capget is stacked ahead of this and will
-	 * initialize effective and permitted.
-	 */
+	*effective = cred->cap_effective;
+	*inheritable = cred->cap_inheritable;
+	*permitted = cred->cap_permitted;
+
 	if (!unconfined(profile) && !COMPLAIN_MODE(profile)) {
 		*effective = cap_intersect(*effective, profile->caps.allow);
 		*permitted = cap_intersect(*permitted, profile->caps.allow);
@@ -132,11 +140,13 @@ static int apparmor_capable(const struct cred *cred, struct user_namespace *ns,
 			    int cap, int audit)
 {
 	struct aa_profile *profile;
-	int error = 0;
-
-	profile = aa_cred_profile(cred);
-	if (!unconfined(profile))
-		error = aa_capable(profile, cap, audit);
+	/* cap_capable returns 0 on success, else -EPERM */
+	int error = cap_capable(cred, ns, cap, audit);
+	if (!error) {
+		profile = aa_cred_profile(cred);
+		if (!unconfined(profile))
+			error = aa_capable(profile, cap, audit);
+	}
 	return error;
 }
 
@@ -605,46 +615,49 @@ static int apparmor_task_setrlimit(struct task_struct *task,
 	return error;
 }
 
-static struct security_hook_list apparmor_hooks[] = {
-	LSM_HOOK_INIT(ptrace_access_check, apparmor_ptrace_access_check),
-	LSM_HOOK_INIT(ptrace_traceme, apparmor_ptrace_traceme),
-	LSM_HOOK_INIT(capget, apparmor_capget),
-	LSM_HOOK_INIT(capable, apparmor_capable),
+static struct security_operations apparmor_ops = {
+	.name =				"apparmor",
 
-	LSM_HOOK_INIT(path_link, apparmor_path_link),
-	LSM_HOOK_INIT(path_unlink, apparmor_path_unlink),
-	LSM_HOOK_INIT(path_symlink, apparmor_path_symlink),
-	LSM_HOOK_INIT(path_mkdir, apparmor_path_mkdir),
-	LSM_HOOK_INIT(path_rmdir, apparmor_path_rmdir),
-	LSM_HOOK_INIT(path_mknod, apparmor_path_mknod),
-	LSM_HOOK_INIT(path_rename, apparmor_path_rename),
-	LSM_HOOK_INIT(path_chmod, apparmor_path_chmod),
-	LSM_HOOK_INIT(path_chown, apparmor_path_chown),
-	LSM_HOOK_INIT(path_truncate, apparmor_path_truncate),
-	LSM_HOOK_INIT(inode_getattr, apparmor_inode_getattr),
+	.ptrace_access_check =		apparmor_ptrace_access_check,
+	.ptrace_traceme =		apparmor_ptrace_traceme,
+	.capget =			apparmor_capget,
+	.capable =			apparmor_capable,
 
-	LSM_HOOK_INIT(file_open, apparmor_file_open),
-	LSM_HOOK_INIT(file_permission, apparmor_file_permission),
-	LSM_HOOK_INIT(file_alloc_security, apparmor_file_alloc_security),
-	LSM_HOOK_INIT(file_free_security, apparmor_file_free_security),
-	LSM_HOOK_INIT(mmap_file, apparmor_mmap_file),
-	LSM_HOOK_INIT(file_mprotect, apparmor_file_mprotect),
-	LSM_HOOK_INIT(file_lock, apparmor_file_lock),
+	.path_link =			apparmor_path_link,
+	.path_unlink =			apparmor_path_unlink,
+	.path_symlink =			apparmor_path_symlink,
+	.path_mkdir =			apparmor_path_mkdir,
+	.path_rmdir =			apparmor_path_rmdir,
+	.path_mknod =			apparmor_path_mknod,
+	.path_rename =			apparmor_path_rename,
+	.path_chmod =			apparmor_path_chmod,
+	.path_chown =			apparmor_path_chown,
+	.path_truncate =		apparmor_path_truncate,
+	.inode_getattr =                apparmor_inode_getattr,
 
-	LSM_HOOK_INIT(getprocattr, apparmor_getprocattr),
-	LSM_HOOK_INIT(setprocattr, apparmor_setprocattr),
+	.file_open =			apparmor_file_open,
+	.file_permission =		apparmor_file_permission,
+	.file_alloc_security =		apparmor_file_alloc_security,
+	.file_free_security =		apparmor_file_free_security,
+	.mmap_file =			apparmor_mmap_file,
+	.mmap_addr =			cap_mmap_addr,
+	.file_mprotect =		apparmor_file_mprotect,
+	.file_lock =			apparmor_file_lock,
 
-	LSM_HOOK_INIT(cred_alloc_blank, apparmor_cred_alloc_blank),
-	LSM_HOOK_INIT(cred_free, apparmor_cred_free),
-	LSM_HOOK_INIT(cred_prepare, apparmor_cred_prepare),
-	LSM_HOOK_INIT(cred_transfer, apparmor_cred_transfer),
+	.getprocattr =			apparmor_getprocattr,
+	.setprocattr =			apparmor_setprocattr,
 
-	LSM_HOOK_INIT(bprm_set_creds, apparmor_bprm_set_creds),
-	LSM_HOOK_INIT(bprm_committing_creds, apparmor_bprm_committing_creds),
-	LSM_HOOK_INIT(bprm_committed_creds, apparmor_bprm_committed_creds),
-	LSM_HOOK_INIT(bprm_secureexec, apparmor_bprm_secureexec),
+	.cred_alloc_blank =		apparmor_cred_alloc_blank,
+	.cred_free =			apparmor_cred_free,
+	.cred_prepare =			apparmor_cred_prepare,
+	.cred_transfer =		apparmor_cred_transfer,
 
-	LSM_HOOK_INIT(task_setrlimit, apparmor_task_setrlimit),
+	.bprm_set_creds =		apparmor_bprm_set_creds,
+	.bprm_committing_creds =	apparmor_bprm_committing_creds,
+	.bprm_committed_creds =		apparmor_bprm_committed_creds,
+	.bprm_secureexec =		apparmor_bprm_secureexec,
+
+	.task_setrlimit =		apparmor_task_setrlimit,
 };
 
 /*
@@ -654,7 +667,7 @@ static struct security_hook_list apparmor_hooks[] = {
 static int param_set_aabool(const char *val, const struct kernel_param *kp);
 static int param_get_aabool(char *buffer, const struct kernel_param *kp);
 #define param_check_aabool param_check_bool
-static const struct kernel_param_ops param_ops_aabool = {
+static struct kernel_param_ops param_ops_aabool = {
 	.flags = KERNEL_PARAM_OPS_FL_NOARG,
 	.set = param_set_aabool,
 	.get = param_get_aabool
@@ -663,7 +676,7 @@ static const struct kernel_param_ops param_ops_aabool = {
 static int param_set_aauint(const char *val, const struct kernel_param *kp);
 static int param_get_aauint(char *buffer, const struct kernel_param *kp);
 #define param_check_aauint param_check_uint
-static const struct kernel_param_ops param_ops_aauint = {
+static struct kernel_param_ops param_ops_aauint = {
 	.set = param_set_aauint,
 	.get = param_get_aauint
 };
@@ -671,7 +684,7 @@ static const struct kernel_param_ops param_ops_aauint = {
 static int param_set_aalockpolicy(const char *val, const struct kernel_param *kp);
 static int param_get_aalockpolicy(char *buffer, const struct kernel_param *kp);
 #define param_check_aalockpolicy param_check_bool
-static const struct kernel_param_ops param_ops_aalockpolicy = {
+static struct kernel_param_ops param_ops_aalockpolicy = {
 	.flags = KERNEL_PARAM_OPS_FL_NOARG,
 	.set = param_set_aalockpolicy,
 	.get = param_get_aalockpolicy
@@ -885,7 +898,7 @@ static int __init apparmor_init(void)
 {
 	int error;
 
-	if (!apparmor_enabled || !security_module_enable("apparmor")) {
+	if (!apparmor_enabled || !security_module_enable(&apparmor_ops)) {
 		aa_info_message("AppArmor disabled by boot time parameter");
 		apparmor_enabled = 0;
 		return 0;
@@ -900,10 +913,17 @@ static int __init apparmor_init(void)
 	error = set_init_cxt();
 	if (error) {
 		AA_ERROR("Failed to set context on init task\n");
-		aa_free_root_ns();
-		goto alloc_out;
+		goto register_security_out;
 	}
-	security_add_hooks(apparmor_hooks, ARRAY_SIZE(apparmor_hooks));
+
+	error = register_security(&apparmor_ops);
+	if (error) {
+		struct cred *cred = (struct cred *)current->real_cred;
+		aa_free_task_context(cred_cxt(cred));
+		cred_cxt(cred) = NULL;
+		AA_ERROR("Unable to register AppArmor\n");
+		goto register_security_out;
+	}
 
 	/* Report that AppArmor successfully initialized */
 	apparmor_initialized = 1;
@@ -915,6 +935,9 @@ static int __init apparmor_init(void)
 		aa_info_message("AppArmor initialized");
 
 	return error;
+
+register_security_out:
+	aa_free_root_ns();
 
 alloc_out:
 	aa_destroy_aafs();

@@ -11,7 +11,6 @@
 
 #include <linux/time.h>
 #include <crypto/public_key.h>
-#include <keys/asymmetric-type.h>
 
 struct x509_certificate {
 	struct x509_certificate *next;

@@ -33,7 +33,7 @@
 
 #include "selftest.h"
 
-#define VERSION "2.21"
+#define VERSION "2.20"
 
 /* Bluetooth sockets */
 #define BT_MAX_PROTO	8
@@ -221,7 +221,7 @@ int bt_sock_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 
 	BT_DBG("sock %p sk %p len %zu", sock, sk, len);
 
-	if (flags & MSG_OOB)
+	if (flags & (MSG_OOB))
 		return -EOPNOTSUPP;
 
 	skb = skb_recv_datagram(sk, flags, noblock, &err);
@@ -271,11 +271,11 @@ static long bt_sock_data_wait(struct sock *sk, long timeo)
 		if (signal_pending(current) || !timeo)
 			break;
 
-		sk_set_bit(SOCKWQ_ASYNC_WAITDATA, sk);
+		set_bit(SOCK_ASYNC_WAITDATA, &sk->sk_socket->flags);
 		release_sock(sk);
 		timeo = schedule_timeout(timeo);
 		lock_sock(sk);
-		sk_clear_bit(SOCKWQ_ASYNC_WAITDATA, sk);
+		clear_bit(SOCK_ASYNC_WAITDATA, &sk->sk_socket->flags);
 	}
 
 	__set_current_state(TASK_RUNNING);
@@ -441,7 +441,7 @@ unsigned int bt_sock_poll(struct file *file, struct socket *sock,
 	if (!test_bit(BT_SK_SUSPEND, &bt_sk(sk)->flags) && sock_writeable(sk))
 		mask |= POLLOUT | POLLWRNORM | POLLWRBAND;
 	else
-		sk_set_bit(SOCKWQ_ASYNC_NOSPACE, sk);
+		set_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags);
 
 	return mask;
 }

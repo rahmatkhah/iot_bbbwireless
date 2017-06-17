@@ -85,8 +85,7 @@ static irqreturn_t iio_simple_dummy_trigger_h(int irq, void *p)
 		}
 	}
 
-	iio_push_to_buffers_with_timestamp(indio_dev, data,
-					   iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_timestamp(indio_dev, data, iio_get_time_ns());
 
 	kfree(data);
 

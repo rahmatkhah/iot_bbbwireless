@@ -17,10 +17,9 @@
 
 /* LCDC DRM driver, based on da8xx-fb */
 
-#include <linux/component.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/suspend.h>
-
+#include <linux/component.h>
 #include "tilcdc_drv.h"
 #include "tilcdc_regs.h"
 #include "tilcdc_tfp410.h"
@@ -143,6 +142,9 @@ static int tilcdc_unload(struct drm_device *dev)
 
 	pm_runtime_disable(dev->dev);
 
+	kfree(priv->saved_register);
+	kfree(priv);
+
 	return 0;
 }
 
@@ -158,12 +160,12 @@ static int tilcdc_load(struct drm_device *dev, unsigned long flags)
 	u32 bpp = 0;
 	int ret;
 
-	priv = devm_kzalloc(dev->dev, sizeof(*priv), GFP_KERNEL);
+	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
 	if (priv)
-		priv->saved_register =
-			devm_kcalloc(dev->dev, tilcdc_num_regs(),
-				     sizeof(*priv->saved_register), GFP_KERNEL);
+		priv->saved_register = kcalloc(sizeof(*priv->saved_register),
+					       tilcdc_num_regs(), GFP_KERNEL);
 	if (!priv || !priv->saved_register) {
+		kfree(priv);
 		dev_err(dev->dev, "failed to allocate private data\n");
 		return -ENOMEM;
 	}
@@ -176,7 +178,7 @@ static int tilcdc_load(struct drm_device *dev, unsigned long flags)
 	priv->wq = alloc_ordered_workqueue("tilcdc", 0);
 	if (!priv->wq) {
 		ret = -ENOMEM;
-		goto fail_unset_priv;
+		goto fail_free_priv;
 	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -228,6 +230,14 @@ static int tilcdc_load(struct drm_device *dev, unsigned long flags)
 	DBG("Maximum Pixel Clock Value %dKHz", priv->max_pixelclock);
 
 	pm_runtime_enable(dev->dev);
+
+	/*
+	 * disable creation of new console during suspend.
+	 * this works around a problem where a ctrl-c is needed
+	 * to be entered on the VT to actually get the device
+	 * to continue into the suspend state.
+	 */
+	pm_set_vt_switch(0);
 
 	/* Determine LCD IP Version */
 	pm_runtime_get_sync(dev->dev);
@@ -341,9 +351,10 @@ fail_free_wq:
 	flush_workqueue(priv->wq);
 	destroy_workqueue(priv->wq);
 
-fail_unset_priv:
+fail_free_priv:
 	dev->dev_private = NULL;
-
+	kfree(priv->saved_register);
+	kfree(priv);
 	return ret;
 }
 
@@ -406,12 +417,12 @@ static void tilcdc_irq_uninstall(struct drm_device *dev)
 	}
 }
 
-static int tilcdc_enable_vblank(struct drm_device *dev, unsigned int pipe)
+static int tilcdc_enable_vblank(struct drm_device *dev, int crtc)
 {
 	return 0;
 }
 
-static void tilcdc_disable_vblank(struct drm_device *dev, unsigned int pipe)
+static void tilcdc_disable_vblank(struct drm_device *dev, int crtc)
 {
 	return;
 }
@@ -553,7 +564,7 @@ static struct drm_driver tilcdc_driver = {
 	.irq_preinstall     = tilcdc_irq_preinstall,
 	.irq_postinstall    = tilcdc_irq_postinstall,
 	.irq_uninstall      = tilcdc_irq_uninstall,
-	.get_vblank_counter = drm_vblank_no_hw_counter,
+	.get_vblank_counter = drm_vblank_count,
 	.enable_vblank      = tilcdc_enable_vblank,
 	.disable_vblank     = tilcdc_disable_vblank,
 	.gem_free_object    = drm_gem_cma_free_object,
@@ -605,7 +616,6 @@ static int tilcdc_pm_suspend(struct device *dev)
 	}
 
 	/* Disable the LCDC controller, to avoid locking up the PRCM */
-	priv->saved_dpms_state = tilcdc_crtc_current_dpms_state(priv->crtc);
 	tilcdc_crtc_dpms(priv->crtc, DRM_MODE_DPMS_OFF);
 
 	/* Save register state: */
@@ -634,9 +644,14 @@ static int tilcdc_pm_resume(struct device *dev)
 			    (priv->rev >= registers[i].rev))
 				tilcdc_write(ddev, registers[i].reg,
 					     priv->saved_register[n++]);
-
-		tilcdc_crtc_dpms(priv->crtc, priv->saved_dpms_state);
 	}
+
+	/*
+	 * if this call isn't here, the display is blank on return from
+	 * suspend.  With this call here the contents of the framebuffer
+	 * during suspend are restored correctly.
+	 */
+	drm_helper_resume_force_mode(ddev);
 
 	drm_kms_helper_poll_enable(ddev);
 

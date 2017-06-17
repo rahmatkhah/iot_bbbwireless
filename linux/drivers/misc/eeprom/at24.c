@@ -3,6 +3,7 @@
  *
  * Copyright (C) 2005-2007 David Brownell
  * Copyright (C) 2008 Wolfram Sang, Pengutronix
+ * Copyright (C) 2015 Pantelis Antoniou, Konsulko Group
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,16 +16,17 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 #include <linux/mutex.h>
+#include <linux/sysfs.h>
 #include <linux/mod_devicetable.h>
 #include <linux/log2.h>
 #include <linux/bitops.h>
 #include <linux/jiffies.h>
 #include <linux/of.h>
-#include <linux/acpi.h>
 #include <linux/i2c.h>
-#include <linux/nvmem-provider.h>
-#include <linux/regmap.h>
 #include <linux/platform_data/at24.h>
+#include <linux/regmap.h>
+#include <linux/nvmem-provider.h>
+#include <linux/io.h>
 
 /*
  * I2C EEPROMs from most vendors are inexpensive and mostly interchangeable.
@@ -56,6 +58,7 @@
 
 struct at24_data {
 	struct at24_platform_data chip;
+	struct memory_accessor macc;
 	int use_smbus;
 	int use_smbus_write;
 
@@ -69,9 +72,10 @@ struct at24_data {
 	unsigned write_max;
 	unsigned num_addresses;
 
-	struct regmap_config regmap_config;
-	struct nvmem_config nvmem_config;
-	struct nvmem_device *nvmem;
+	struct regmap_config *regmap_config;
+	struct regmap *regmap;
+	struct nvmem_config *nvmem_config;
+	struct nvmem_device *nvmem_dev;
 
 	/*
 	 * Some chips tie up multiple I2C addresses; dummy devices reserve
@@ -135,11 +139,7 @@ static const struct i2c_device_id at24_ids[] = {
 };
 MODULE_DEVICE_TABLE(i2c, at24_ids);
 
-static const struct acpi_device_id at24_acpi_ids[] = {
-	{ "INT3499", AT24_DEVICE_MAGIC(8192 / 8, 0) },
-	{ }
-};
-MODULE_DEVICE_TABLE(acpi, at24_acpi_ids);
+static DEFINE_IDA(at24_ida);
 
 /*-------------------------------------------------------------------------*/
 
@@ -196,11 +196,19 @@ static ssize_t at24_eeprom_read(struct at24_data *at24, char *buf,
 	if (count > io_limit)
 		count = io_limit;
 
-	if (at24->use_smbus) {
+	switch (at24->use_smbus) {
+	case I2C_SMBUS_I2C_BLOCK_DATA:
 		/* Smaller eeproms can work given some SMBus extension calls */
 		if (count > I2C_SMBUS_BLOCK_MAX)
 			count = I2C_SMBUS_BLOCK_MAX;
-	} else {
+		break;
+	case I2C_SMBUS_WORD_DATA:
+		count = 2;
+		break;
+	case I2C_SMBUS_BYTE_DATA:
+		count = 1;
+		break;
+	default:
 		/*
 		 * When we have a better choice than SMBus calls, use a
 		 * combined I2C message. Write address; then read up to
@@ -231,10 +239,27 @@ static ssize_t at24_eeprom_read(struct at24_data *at24, char *buf,
 	timeout = jiffies + msecs_to_jiffies(write_timeout);
 	do {
 		read_time = jiffies;
-		if (at24->use_smbus) {
-			status = i2c_smbus_read_i2c_block_data_or_emulated(client, offset,
-									   count, buf);
-		} else {
+		switch (at24->use_smbus) {
+		case I2C_SMBUS_I2C_BLOCK_DATA:
+			status = i2c_smbus_read_i2c_block_data(client, offset,
+					count, buf);
+			break;
+		case I2C_SMBUS_WORD_DATA:
+			status = i2c_smbus_read_word_data(client, offset);
+			if (status >= 0) {
+				buf[0] = status & 0xff;
+				buf[1] = status >> 8;
+				status = count;
+			}
+			break;
+		case I2C_SMBUS_BYTE_DATA:
+			status = i2c_smbus_read_byte_data(client, offset);
+			if (status >= 0) {
+				buf[0] = status;
+				status = count;
+			}
+			break;
+		default:
 			status = i2c_transfer(client->adapter, msg, 2);
 			if (status == 2)
 				status = count;
@@ -408,46 +433,29 @@ static ssize_t at24_write(struct at24_data *at24, const char *buf, loff_t off,
 
 /*-------------------------------------------------------------------------*/
 
+/* panto: using the EEPROM framework macc is superfluous */
+
 /*
- * Provide a regmap interface, which is registered with the NVMEM
- * framework
-*/
-static int at24_regmap_read(void *context, const void *reg, size_t reg_size,
-			    void *val, size_t val_size)
-{
-	struct at24_data *at24 = context;
-	off_t offset = *(u32 *)reg;
-	int err;
+ * This lets other kernel code access the eeprom data. For example, it
+ * might hold a board's Ethernet address, or board-specific calibration
+ * data generated on the manufacturing floor.
+ */
 
-	err = at24_read(at24, val, offset, val_size);
-	if (err)
-		return err;
-	return 0;
+static ssize_t at24_macc_read(struct memory_accessor *macc, char *buf,
+			 off_t offset, size_t count)
+{
+	struct at24_data *at24 = container_of(macc, struct at24_data, macc);
+
+	return at24_read(at24, buf, offset, count);
 }
 
-static int at24_regmap_write(void *context, const void *data, size_t count)
+static ssize_t at24_macc_write(struct memory_accessor *macc, const char *buf,
+			  off_t offset, size_t count)
 {
-	struct at24_data *at24 = context;
-	const char *buf;
-	u32 offset;
-	size_t len;
-	int err;
+	struct at24_data *at24 = container_of(macc, struct at24_data, macc);
 
-	memcpy(&offset, data, sizeof(offset));
-	buf = (const char *)data + sizeof(offset);
-	len = count - sizeof(offset);
-
-	err = at24_write(at24, buf, offset, len);
-	if (err)
-		return err;
-	return 0;
+	return at24_write(at24, buf, offset, count);
 }
-
-static const struct regmap_bus at24_regmap_bus = {
-	.read = at24_regmap_read,
-	.write = at24_regmap_write,
-	.reg_format_endian_default = REGMAP_ENDIAN_NATIVE,
-};
 
 /*-------------------------------------------------------------------------*/
 
@@ -472,33 +480,113 @@ static void at24_get_ofdata(struct i2c_client *client,
 { }
 #endif /* CONFIG_OF */
 
+static int regmap_at24_read(void *context,
+			    const void *reg, size_t reg_size,
+			    void *val, size_t val_size)
+{
+	struct i2c_client *client = context;
+	struct at24_data *at24;
+	unsigned int offset;
+	int ret;
+
+	/* reg bits is hardcoded to 32 bits */
+	BUG_ON(reg_size != 4);
+	offset = __raw_readl(reg);
+
+	at24 = i2c_get_clientdata(client);
+	if (at24 == NULL)
+		return -ENODEV;
+
+	/* val bytes is always 1 */
+	BUG_ON(at24->regmap_config->val_bits != 8);
+
+	ret = at24_read(at24, val, offset, val_size);
+	if (ret < 0)
+		return ret;
+	if (ret != val_size)
+		return -EINVAL;
+
+	return 0;
+}
+
+static int regmap_at24_gather_write(void *context,
+				    const void *reg, size_t reg_size,
+				    const void *val, size_t val_size)
+{
+	struct i2c_client *client = context;
+	struct at24_data *at24;
+	unsigned int offset;
+	int ret;
+
+	at24 = i2c_get_clientdata(client);
+	if (at24 == NULL)
+		return -ENODEV;
+
+	BUG_ON(reg_size != 4);
+	offset = __raw_readl(reg);
+
+	/* val bytes is always 1 */
+	BUG_ON(at24->regmap_config->val_bits != 8);
+
+	ret = at24_write(at24, val, offset, val_size);
+	if (ret < 0)
+		return ret;
+	if (ret != val_size)
+		return -EINVAL;
+
+	return 0;
+}
+
+static int regmap_at24_write(void *context, const void *data, size_t count)
+{
+	struct i2c_client *client = context;
+	struct at24_data *at24;
+	unsigned int reg_bytes, offset;
+
+	at24 = i2c_get_clientdata(client);
+	if (at24 == NULL)
+		return -ENODEV;
+
+	reg_bytes = at24->regmap_config->reg_bits / 8;
+	offset = reg_bytes;
+
+	BUG_ON(reg_bytes != 4);
+	BUG_ON(count <= offset);
+
+	return regmap_at24_gather_write(context, data, reg_bytes,
+			data + offset, count - offset);
+}
+
+static struct regmap_bus regmap_at24_bus = {
+	.read = regmap_at24_read,
+	.write = regmap_at24_write,
+	.gather_write = regmap_at24_gather_write,
+	.reg_format_endian_default = REGMAP_ENDIAN_NATIVE,
+	.val_format_endian_default = REGMAP_ENDIAN_NATIVE,
+};
+
 static int at24_probe(struct i2c_client *client, const struct i2c_device_id *id)
 {
 	struct at24_platform_data chip;
-	kernel_ulong_t magic = 0;
 	bool writable;
 	int use_smbus = 0;
 	int use_smbus_write = 0;
 	struct at24_data *at24;
 	int err;
 	unsigned i, num_addresses;
+	kernel_ulong_t magic;
+	struct regmap_config *regmap_config;
 	struct regmap *regmap;
+	struct nvmem_config *nvmem_config;
+	struct nvmem_device *nvmem_dev;
 
 	if (client->dev.platform_data) {
 		chip = *(struct at24_platform_data *)client->dev.platform_data;
 	} else {
-		if (id) {
-			magic = id->driver_data;
-		} else {
-			const struct acpi_device_id *aid;
-
-			aid = acpi_match_device(at24_acpi_ids, &client->dev);
-			if (aid)
-				magic = aid->driver_data;
-		}
-		if (!magic)
+		if (!id->driver_data)
 			return -ENODEV;
 
+		magic = id->driver_data;
 		chip.byte_len = BIT(magic & AT24_BITMASK(AT24_SIZE_BYTELEN));
 		magic >>= AT24_SIZE_BYTELEN;
 		chip.flags = magic & AT24_BITMASK(AT24_SIZE_FLAGS);
@@ -558,16 +646,75 @@ static int at24_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		}
 	}
 
+	regmap_config = devm_kzalloc(&client->dev, sizeof(*regmap_config),
+			GFP_KERNEL);
+	if (IS_ERR(regmap_config)) {
+		err = PTR_ERR(regmap_config);
+		dev_err(&client->dev, "%s: regmap_config allocation failed (%d)\n",
+			__func__, err);
+		return err;
+	}
+
+	/* use 32 bits as registers, they don't appear on the wire anyway */
+	regmap_config->reg_bits = 32;
+	regmap_config->val_bits = 8;
+	regmap_config->cache_type = REGCACHE_NONE;
+	regmap_config->max_register = chip.byte_len;
+
 	if (chip.flags & AT24_FLAG_TAKE8ADDR)
 		num_addresses = 8;
 	else
 		num_addresses =	DIV_ROUND_UP(chip.byte_len,
 			(chip.flags & AT24_FLAG_ADDR16) ? 65536 : 256);
 
+	/* we can't use devm_regmap_init_i2c due to the many i2c clients */
+	regmap = devm_regmap_init(&client->dev, &regmap_at24_bus,
+			client, regmap_config);
+	if (IS_ERR(regmap)) {
+		err = PTR_ERR(regmap);
+		dev_err(&client->dev, "%s: regmap allocation failed (%d)\n",
+			__func__, err);
+		return err;
+	}
+
+	nvmem_config = devm_kzalloc(&client->dev, sizeof(*nvmem_config),
+			GFP_KERNEL);
+	if (IS_ERR(nvmem_config)) {
+		err = PTR_ERR(nvmem_config);
+		dev_err(&client->dev, "%s: nvmem_config allocation failed (%d)\n",
+			__func__, err);
+		return err;
+	}
+	nvmem_config->dev = &client->dev;
+	nvmem_config->name = "at24-";
+	nvmem_config->id = ida_simple_get(&at24_ida, 0, 0, GFP_KERNEL);
+	nvmem_config->owner = THIS_MODULE;
+	if (nvmem_config->id < 0) {
+		err = nvmem_config->id;
+		dev_err(&client->dev, "%s: eeprom id allocation failed (%d)\n",
+			__func__, err);
+		return err;
+	}
+
+	nvmem_dev = nvmem_register(nvmem_config);
+	if (IS_ERR(nvmem_dev)) {
+		err = PTR_ERR(nvmem_dev);
+		dev_err(&client->dev, "%s: nvmem_register failed (%d)\n",
+			__func__, err);
+		goto err_out;
+	}
+
 	at24 = devm_kzalloc(&client->dev, sizeof(struct at24_data) +
 		num_addresses * sizeof(struct i2c_client *), GFP_KERNEL);
-	if (!at24)
-		return -ENOMEM;
+	if (!at24) {
+		err = -ENOMEM;
+		goto err_out;
+	}
+
+	at24->regmap = regmap;
+	at24->regmap_config = regmap_config;
+	at24->nvmem_config = nvmem_config;
+	at24->nvmem_dev = nvmem_dev;
 
 	mutex_init(&at24->lock);
 	at24->use_smbus = use_smbus;
@@ -575,11 +722,15 @@ static int at24_probe(struct i2c_client *client, const struct i2c_device_id *id)
 	at24->chip = chip;
 	at24->num_addresses = num_addresses;
 
+	at24->macc.read = at24_macc_read;
+
 	writable = !(chip.flags & AT24_FLAG_READONLY);
 	if (writable) {
 		if (!use_smbus || use_smbus_write) {
 
 			unsigned write_max = chip.page_size;
+
+			at24->macc.write = at24_macc_write;
 
 			if (write_max > io_limit)
 				write_max = io_limit;
@@ -590,8 +741,10 @@ static int at24_probe(struct i2c_client *client, const struct i2c_device_id *id)
 			/* buffer (data + address at the beginning) */
 			at24->writebuf = devm_kzalloc(&client->dev,
 				write_max + 2, GFP_KERNEL);
-			if (!at24->writebuf)
-				return -ENOMEM;
+			if (!at24->writebuf) {
+				err = -ENOMEM;
+				goto err_out;
+			}
 		} else {
 			dev_warn(&client->dev,
 				"cannot write due to controller restrictions.");
@@ -612,38 +765,10 @@ static int at24_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		}
 	}
 
-	at24->regmap_config.reg_bits = 32;
-	at24->regmap_config.val_bits = 8;
-	at24->regmap_config.reg_stride = 1;
-	at24->regmap_config.max_register = chip.byte_len - 1;
-
-	regmap = devm_regmap_init(&client->dev, &at24_regmap_bus, at24,
-				  &at24->regmap_config);
-	if (IS_ERR(regmap)) {
-		dev_err(&client->dev, "regmap init failed\n");
-		err = PTR_ERR(regmap);
-		goto err_clients;
-	}
-
-	at24->nvmem_config.name = dev_name(&client->dev);
-	at24->nvmem_config.dev = &client->dev;
-	at24->nvmem_config.read_only = !writable;
-	at24->nvmem_config.root_only = true;
-	at24->nvmem_config.owner = THIS_MODULE;
-	at24->nvmem_config.compat = true;
-	at24->nvmem_config.base_dev = &client->dev;
-
-	at24->nvmem = nvmem_register(&at24->nvmem_config);
-
-	if (IS_ERR(at24->nvmem)) {
-		err = PTR_ERR(at24->nvmem);
-		goto err_clients;
-	}
-
 	i2c_set_clientdata(client, at24);
 
-	dev_info(&client->dev, "%u byte %s EEPROM, %s, %u bytes/write\n",
-		chip.byte_len, client->name,
+	dev_info(&client->dev, "%zu byte %s EEPROM, %s, %u bytes/write\n",
+		at24->chip.byte_len, client->name,
 		writable ? "writable" : "read-only", at24->write_max);
 	if (use_smbus == I2C_SMBUS_WORD_DATA ||
 	    use_smbus == I2C_SMBUS_BYTE_DATA) {
@@ -654,14 +779,18 @@ static int at24_probe(struct i2c_client *client, const struct i2c_device_id *id)
 
 	/* export data to kernel code */
 	if (chip.setup)
-		chip.setup(at24->nvmem, chip.context);
+		chip.setup(&at24->macc, chip.context);
 
 	return 0;
 
 err_clients:
+
 	for (i = 1; i < num_addresses; i++)
 		if (at24->client[i])
 			i2c_unregister_device(at24->client[i]);
+
+err_out:
+	ida_simple_remove(&at24_ida, nvmem_config->id);
 
 	return err;
 }
@@ -673,10 +802,10 @@ static int at24_remove(struct i2c_client *client)
 
 	at24 = i2c_get_clientdata(client);
 
-	nvmem_unregister(at24->nvmem);
-
 	for (i = 1; i < at24->num_addresses; i++)
 		i2c_unregister_device(at24->client[i]);
+
+	nvmem_unregister(at24->nvmem_dev);
 
 	return 0;
 }
@@ -686,7 +815,7 @@ static int at24_remove(struct i2c_client *client)
 static struct i2c_driver at24_driver = {
 	.driver = {
 		.name = "at24",
-		.acpi_match_table = ACPI_PTR(at24_acpi_ids),
+		.owner = THIS_MODULE,
 	},
 	.probe = at24_probe,
 	.remove = at24_remove,

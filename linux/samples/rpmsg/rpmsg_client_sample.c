@@ -89,12 +89,24 @@ MODULE_DEVICE_TABLE(rpmsg, rpmsg_driver_sample_id_table);
 
 static struct rpmsg_driver rpmsg_sample_client = {
 	.drv.name	= KBUILD_MODNAME,
+	.drv.owner	= THIS_MODULE,
 	.id_table	= rpmsg_driver_sample_id_table,
 	.probe		= rpmsg_sample_probe,
 	.callback	= rpmsg_sample_cb,
 	.remove		= rpmsg_sample_remove,
 };
-module_rpmsg_driver(rpmsg_sample_client);
+
+static int __init rpmsg_client_sample_init(void)
+{
+	return register_rpmsg_driver(&rpmsg_sample_client);
+}
+module_init(rpmsg_client_sample_init);
+
+static void __exit rpmsg_client_sample_fini(void)
+{
+	unregister_rpmsg_driver(&rpmsg_sample_client);
+}
+module_exit(rpmsg_client_sample_fini);
 
 MODULE_DESCRIPTION("Remote processor messaging sample client driver");
 MODULE_LICENSE("GPL v2");

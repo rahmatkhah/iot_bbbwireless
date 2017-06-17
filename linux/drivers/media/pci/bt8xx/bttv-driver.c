@@ -2690,8 +2690,7 @@ static int bttv_s_fbuf(struct file *file, void *f,
 		fh->ov.w.height = fb->fmt.height;
 		btv->init.ov.w.width  = fb->fmt.width;
 		btv->init.ov.w.height = fb->fmt.height;
-
-		kfree(fh->ov.clips);
+			kfree(fh->ov.clips);
 		fh->ov.clips = NULL;
 		fh->ov.nclips = 0;
 
@@ -3639,10 +3638,13 @@ static void
 bttv_irq_wakeup_vbi(struct bttv *btv, struct bttv_buffer *wakeup,
 		    unsigned int state)
 {
+	struct timeval ts;
+
 	if (NULL == wakeup)
 		return;
 
-	v4l2_get_timestamp(&wakeup->vb.ts);
+	v4l2_get_timestamp(&ts);
+	wakeup->vb.ts = ts;
 	wakeup->vb.field_count = btv->field_count;
 	wakeup->vb.state = state;
 	wake_up(&wakeup->vb.done);
@@ -4250,7 +4252,6 @@ fail0:
 		iounmap(btv->bt848_mmio);
 	release_mem_region(pci_resource_start(btv->c.pci,0),
 			   pci_resource_len(btv->c.pci,0));
-	pci_disable_device(btv->c.pci);
 	return result;
 }
 
@@ -4294,7 +4295,6 @@ static void bttv_remove(struct pci_dev *pci_dev)
 	iounmap(btv->bt848_mmio);
 	release_mem_region(pci_resource_start(btv->c.pci,0),
 			   pci_resource_len(btv->c.pci,0));
-	pci_disable_device(btv->c.pci);
 
 	v4l2_device_unregister(&btv->c.v4l2_dev);
 	bttvs[btv->c.nr] = NULL;

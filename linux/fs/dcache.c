@@ -579,6 +579,7 @@ static struct dentry *dentry_kill(struct dentry *dentry)
 
 failed:
 	spin_unlock(&dentry->d_lock);
+	cpu_chill();
 	return dentry; /* try again with same dentry */
 }
 
@@ -748,14 +749,10 @@ static inline bool fast_dput(struct dentry *dentry)
  */
 void dput(struct dentry *dentry)
 {
-	struct dentry *parent;
-
 	if (unlikely(!dentry))
 		return;
 
 repeat:
-	might_sleep();
-
 	rcu_read_lock();
 	if (likely(fast_dput(dentry))) {
 		rcu_read_unlock();
@@ -786,20 +783,9 @@ repeat:
 	return;
 
 kill_it:
-	parent = dentry_kill(dentry);
-	if (parent) {
-		int r;
-
-		if (parent == dentry) {
-			/* the task with the highest priority won't schedule */
-			r = cond_resched();
-			if (!r)
-				cpu_chill();
-		} else {
-			dentry = parent;
-		}
+	dentry = dentry_kill(dentry);
+	if (dentry)
 		goto repeat;
-	}
 }
 EXPORT_SYMBOL(dput);
 
@@ -1335,11 +1321,8 @@ int d_set_mounted(struct dentry *dentry)
 	}
 	spin_lock(&dentry->d_lock);
 	if (!d_unlinked(dentry)) {
-		ret = -EBUSY;
-		if (!d_mountpoint(dentry)) {
-			dentry->d_flags |= DCACHE_MOUNTED;
-			ret = 0;
-		}
+		dentry->d_flags |= DCACHE_MOUNTED;
+		ret = 0;
 	}
  	spin_unlock(&dentry->d_lock);
 out:
@@ -1685,8 +1668,7 @@ void d_set_d_op(struct dentry *dentry, const struct dentry_operations *op)
 				DCACHE_OP_REVALIDATE	|
 				DCACHE_OP_WEAK_REVALIDATE	|
 				DCACHE_OP_DELETE	|
-				DCACHE_OP_SELECT_INODE	|
-				DCACHE_OP_REAL));
+				DCACHE_OP_SELECT_INODE));
 	dentry->d_op = op;
 	if (!op)
 		return;
@@ -1704,8 +1686,6 @@ void d_set_d_op(struct dentry *dentry, const struct dentry_operations *op)
 		dentry->d_flags |= DCACHE_OP_PRUNE;
 	if (op->d_select_inode)
 		dentry->d_flags |= DCACHE_OP_SELECT_INODE;
-	if (op->d_real)
-		dentry->d_flags |= DCACHE_OP_REAL;
 
 }
 EXPORT_SYMBOL(d_set_d_op);
@@ -2730,7 +2710,7 @@ struct dentry *d_ancestor(struct dentry *p1, struct dentry *p2)
  * This helper attempts to cope with remotely renamed directories
  *
  * It assumes that the caller is already holding
- * dentry->d_parent->d_inode->i_mutex, and rename_lock
+ * dentry->d_parent->d_inode->i_mutex, inode->i_lock and rename_lock
  *
  * Note: If ever the locking in lock_rename() changes, then please
  * remember to update this too...
@@ -2756,6 +2736,7 @@ out_unalias:
 	__d_move(alias, dentry, false);
 	ret = 0;
 out_err:
+	spin_unlock(&inode->i_lock);
 	if (m2)
 		mutex_unlock(m2);
 	if (m1)
@@ -2801,11 +2782,10 @@ struct dentry *d_splice_alias(struct inode *inode, struct dentry *dentry)
 	if (S_ISDIR(inode->i_mode)) {
 		struct dentry *new = __d_find_any_alias(inode);
 		if (unlikely(new)) {
-			/* The reference to new ensures it remains an alias */
-			spin_unlock(&inode->i_lock);
 			write_seqlock(&rename_lock);
 			if (unlikely(d_ancestor(new, dentry))) {
 				write_sequnlock(&rename_lock);
+				spin_unlock(&inode->i_lock);
 				dput(new);
 				new = ERR_PTR(-ELOOP);
 				pr_warn_ratelimited(
@@ -2824,6 +2804,7 @@ struct dentry *d_splice_alias(struct inode *inode, struct dentry *dentry)
 			} else {
 				__d_move(new, dentry, false);
 				write_sequnlock(&rename_lock);
+				spin_unlock(&inode->i_lock);
 				security_d_instantiate(new, inode);
 			}
 			iput(inode);
@@ -3460,15 +3441,22 @@ void __init vfs_caches_init_early(void)
 	inode_init_early();
 }
 
-void __init vfs_caches_init(void)
+void __init vfs_caches_init(unsigned long mempages)
 {
+	unsigned long reserve;
+
+	/* Base hash sizes on available memory, with a reserve equal to
+           150% of current kernel size */
+
+	reserve = min((mempages - nr_free_pages()) * 3/2, mempages - 1);
+	mempages -= reserve;
+
 	names_cachep = kmem_cache_create("names_cache", PATH_MAX, 0,
 			SLAB_HWCACHE_ALIGN|SLAB_PANIC, NULL);
 
 	dcache_init();
 	inode_init();
-	files_init();
-	files_maxfiles_init();
+	files_init(mempages);
 	mnt_init();
 	bdev_cache_init();
 	chrdev_init();

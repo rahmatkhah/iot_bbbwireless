@@ -55,7 +55,7 @@ usage () {
 	echo "       --bootargs kernel-boot-arguments"
 	echo "       --bootimage relative-path-to-kernel-boot-image"
 	echo "       --buildonly"
-	echo "       --configs \"config-file list w/ repeat factor (3*TINY01)\""
+	echo "       --configs \"config-file list\""
 	echo "       --cpus N"
 	echo "       --datestamp string"
 	echo "       --defconfig string"
@@ -75,7 +75,7 @@ usage () {
 while test $# -gt 0
 do
 	case "$1" in
-	--bootargs|--bootarg)
+	--bootargs)
 		checkarg --bootargs "(list of kernel boot arguments)" "$#" "$2" '.*' '^--'
 		TORTURE_BOOTARGS="$2"
 		shift
@@ -88,7 +88,7 @@ do
 	--buildonly)
 		TORTURE_BUILDONLY=1
 		;;
-	--configs|--config)
+	--configs)
 		checkarg --configs "(list of config files)" "$#" "$2" '^[^/]*$' '^--'
 		configs="$2"
 		shift
@@ -134,7 +134,7 @@ do
 	--no-initrd)
 		TORTURE_INITRD=""; export TORTURE_INITRD
 		;;
-	--qemu-args|--qemu-arg)
+	--qemu-args)
 		checkarg --qemu-args "-qemu args" $# "$2" '^-' '^error'
 		TORTURE_QEMU_ARG="$2"
 		shift
@@ -178,26 +178,13 @@ fi
 touch $T/cfgcpu
 for CF in $configs
 do
-	case $CF in
-	[0-9]\**|[0-9][0-9]\**|[0-9][0-9][0-9]\**)
-		config_reps=`echo $CF | sed -e 's/\*.*$//'`
-		CF1=`echo $CF | sed -e 's/^[^*]*\*//'`
-		;;
-	*)
-		config_reps=1
-		CF1=$CF
-		;;
-	esac
-	if test -f "$CONFIGFRAG/$CF1"
+	if test -f "$CONFIGFRAG/$CF"
 	then
-		cpu_count=`configNR_CPUS.sh $CONFIGFRAG/$CF1`
-		cpu_count=`configfrag_boot_cpus "$TORTURE_BOOTARGS" "$CONFIGFRAG/$CF1" "$cpu_count"`
-		for ((cur_rep=0;cur_rep<$config_reps;cur_rep++))
-		do
-			echo $CF1 $cpu_count >> $T/cfgcpu
-		done
+		cpu_count=`configNR_CPUS.sh $CONFIGFRAG/$CF`
+		cpu_count=`configfrag_boot_cpus "$TORTURE_BOOTARGS" "$CONFIGFRAG/$CF" "$cpu_count"`
+		echo $CF $cpu_count >> $T/cfgcpu
 	else
-		echo "The --configs file $CF1 does not exist, terminating."
+		echo "The --configs file $CF does not exist, terminating."
 		exit 1
 	fi
 done

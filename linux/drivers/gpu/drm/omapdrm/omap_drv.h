@@ -24,13 +24,12 @@
 #include <linux/platform_data/omap_drm.h>
 #include <linux/types.h>
 #include <linux/wait.h>
+#include <video/omapdss.h>
 
 #include <drm/drmP.h>
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_gem.h>
 #include <drm/omap_drm.h>
-
-#include "dss/omapdss.h"
 
 #define DBG(fmt, ...) DRM_DEBUG(fmt"\n", ##__VA_ARGS__)
 #define VERB(fmt, ...) if (0) DRM_DEBUG(fmt, ##__VA_ARGS__) /* verbose debug */
@@ -140,8 +139,8 @@ void omap_gem_describe_objects(struct list_head *list, struct seq_file *m);
 int omap_gem_resume(struct device *dev);
 #endif
 
-int omap_irq_enable_vblank(struct drm_device *dev, unsigned int pipe);
-void omap_irq_disable_vblank(struct drm_device *dev, unsigned int pipe);
+int omap_irq_enable_vblank(struct drm_device *dev, int crtc_id);
+void omap_irq_disable_vblank(struct drm_device *dev, int crtc_id);
 void __omap_irq_register(struct drm_device *dev, struct omap_drm_irq *irq);
 void __omap_irq_unregister(struct drm_device *dev, struct omap_drm_irq *irq);
 void omap_irq_register(struct drm_device *dev, struct omap_drm_irq *irq);
@@ -149,18 +148,8 @@ void omap_irq_unregister(struct drm_device *dev, struct omap_drm_irq *irq);
 void omap_drm_irq_uninstall(struct drm_device *dev);
 int omap_drm_irq_install(struct drm_device *dev);
 
-#ifdef CONFIG_DRM_FBDEV_EMULATION
 struct drm_fb_helper *omap_fbdev_init(struct drm_device *dev);
 void omap_fbdev_free(struct drm_device *dev);
-#else
-static inline struct drm_fb_helper *omap_fbdev_init(struct drm_device *dev)
-{
-	return NULL;
-}
-static inline void omap_fbdev_free(struct drm_device *dev)
-{
-}
-#endif
 
 struct omap_video_timings *omap_crtc_timings(struct drm_crtc *crtc);
 enum omap_channel omap_crtc_channel(struct drm_crtc *crtc);
@@ -255,6 +244,17 @@ struct dma_buf *omap_gem_prime_export(struct drm_device *dev,
 struct drm_gem_object *omap_gem_prime_import(struct drm_device *dev,
 		struct dma_buf *buffer);
 
+static inline int align_pitch(int pitch, int width, int bpp)
+{
+	int bytespp = (bpp + 7) / 8;
+	/* in case someone tries to feed us a completely bogus stride: */
+	pitch = max(pitch, width * bytespp);
+	/* PVR needs alignment to 8 pixels.. right now that is the most
+	 * restrictive stride requirement..
+	 */
+	return roundup(pitch, 8 * bytespp);
+}
+
 /* map crtc to vblank mask */
 uint32_t pipe2vbl(struct drm_crtc *crtc);
 struct omap_dss_device *omap_encoder_get_dssdev(struct drm_encoder *encoder);
@@ -284,15 +284,15 @@ fail:
 	return -ENOENT;
 }
 
-#if IS_ENABLED(CONFIG_DRM_OMAP_WB)
+#if IS_ENABLED(CONFIG_DRM_OMAP_WB_M2M)
 
-int wb_init(struct drm_device *drmdev);
-void wb_cleanup(struct drm_device *drmdev);
+int wbm2m_init(struct drm_device *drmdev);
+void wbm2m_cleanup(struct drm_device *drmdev);
 
 #else
 
-static inline int wb_init(struct drm_device *drmdev) { return 0; }
-static inline void wb_cleanup(struct drm_device *drmdev) { }
+static inline int wbm2m_init(struct drm_device *drmdev) { return 0; }
+static inline void wbm2m_cleanup(struct drm_device *drmdev) { }
 
 #endif
 

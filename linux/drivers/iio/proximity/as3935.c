@@ -50,6 +50,7 @@
 #define AS3935_TUNE_CAP		0x08
 #define AS3935_CALIBRATE	0x3D
 
+#define AS3935_WRITE_DATA	BIT(15)
 #define AS3935_READ_DATA	BIT(14)
 #define AS3935_ADDRESS(x)	((x) << 8)
 
@@ -104,7 +105,7 @@ static int as3935_write(struct as3935_state *st,
 {
 	u8 *buf = st->buf;
 
-	buf[0] = AS3935_ADDRESS(reg) >> 8;
+	buf[0] = (AS3935_WRITE_DATA | AS3935_ADDRESS(reg)) >> 8;
 	buf[1] = val;
 
 	return spi_write(st->spi, buf, 2);
@@ -230,16 +231,10 @@ static void as3935_event_work(struct work_struct *work)
 {
 	struct as3935_state *st;
 	int val;
-	int ret;
 
 	st = container_of(work, struct as3935_state, work.work);
 
-	ret = as3935_read(st, AS3935_INT, &val);
-	if (ret) {
-		dev_warn(&st->spi->dev, "read error\n");
-		return;
-	}
-
+	as3935_read(st, AS3935_INT, &val);
 	val &= AS3935_INT_MASK;
 
 	switch (val) {
@@ -247,7 +242,7 @@ static void as3935_event_work(struct work_struct *work)
 		iio_trigger_poll(st->trig);
 		break;
 	case AS3935_NOISE_INT:
-		dev_warn(&st->spi->dev, "noise level is too high\n");
+		dev_warn(&st->spi->dev, "noise level is too high");
 		break;
 	}
 }
@@ -351,6 +346,7 @@ static int as3935_probe(struct spi_device *spi)
 
 	st = iio_priv(indio_dev);
 	st->spi = spi;
+	st->tune_cap = 0;
 
 	spi_set_drvdata(spi, indio_dev);
 	mutex_init(&st->lock);
@@ -396,7 +392,7 @@ static int as3935_probe(struct spi_device *spi)
 		return ret;
 	}
 
-	ret = iio_triggered_buffer_setup(indio_dev, iio_pollfunc_store_time,
+	ret = iio_triggered_buffer_setup(indio_dev, NULL,
 		&as3935_trigger_handler, NULL);
 
 	if (ret) {
@@ -472,3 +468,4 @@ module_spi_driver(as3935_driver);
 MODULE_AUTHOR("Matt Ranostay <mranostay@gmail.com>");
 MODULE_DESCRIPTION("AS3935 lightning sensor");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("spi:as3935");

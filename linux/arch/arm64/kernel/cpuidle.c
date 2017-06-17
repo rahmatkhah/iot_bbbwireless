@@ -15,13 +15,18 @@
 #include <asm/cpuidle.h>
 #include <asm/cpu_ops.h>
 
-int __init arm_cpuidle_init(unsigned int cpu)
+int arm_cpuidle_init(unsigned int cpu)
 {
 	int ret = -EOPNOTSUPP;
+	struct device_node *cpu_node = of_cpu_device_node_get(cpu);
+
+	if (!cpu_node)
+		return -ENODEV;
 
 	if (cpu_ops[cpu] && cpu_ops[cpu]->cpu_init_idle)
-		ret = cpu_ops[cpu]->cpu_init_idle(cpu);
+		ret = cpu_ops[cpu]->cpu_init_idle(cpu_node, cpu);
 
+	of_node_put(cpu_node);
 	return ret;
 }
 

@@ -8,11 +8,11 @@ BT.656/1120 capable encoder chip.
 
 Required properties:
 - compatible: must be "ti,vip1", "ti,vip2" or "ti,vip3".
-- reg:	VIP top level, parser, colorspace converter, scaler for slice 0 and 1
-	and vpdma memory address space;
-- reg-names: vip, parser0, csc0, sc0, parser1, csc1, sc1 and vpdma registers;
+- reg:	physical base address and length of the registers set for the 8
+	memory regions required;
+- reg-names: name associated with the memory regions described is <reg>;
 - interrupts: should contain IRQ line for VIP;
-- syscon-pol: phandle to the device control module;
+- syscon: phandle to the device control module;
 
 VIP supports 2 slices. Each slice can handle up to 2 camera port nodes.
 Each port nodes should contain a 'port' child node with child 'endpoint'
@@ -41,8 +41,7 @@ Example:
 		ti,hwmods = "vip1";
 		interrupts = <GIC_SPI 351 IRQ_TYPE_LEVEL_HIGH>,
 			     <GIC_SPI 392 IRQ_TYPE_LEVEL_HIGH>;
-		/* CTRL_CORE_SMA_SW_1 */
-		syscon-pol = <&scm_conf 0x534>;
+		syscon = <&dra7_ctrl_core>;
 		#address-cells = <1>;
 		#size-cells = <0>;
 		status = "disabled";
@@ -50,7 +49,6 @@ Example:
 			#address-cells = <1>;
 			#size-cells = <0>;
 			reg = <0>;
-			status = "disabled";
 			endpoint@0 {
 				slave-mode;
 				remote-endpoint = <&camera1>;
@@ -60,19 +58,7 @@ Example:
 			#address-cells = <1>;
 			#size-cells = <0>;
 			reg = <1>;
-			status = "disabled";
-		};
-		vin1b: port@2 {
-			#address-cells = <1>;
-			#size-cells = <0>;
-			reg = <2>;
-			status = "disabled";
-		};
-		vin2b: port@3 {
-			#address-cells = <1>;
-			#size-cells = <0>;
-			reg = <3>;
-			status = "disabled";
+			};
 		};
 	};
 

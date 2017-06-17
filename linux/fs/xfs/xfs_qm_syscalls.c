@@ -239,7 +239,7 @@ xfs_qm_scall_trunc_qfile(
 	tp = xfs_trans_alloc(mp, XFS_TRANS_TRUNCATE_FILE);
 	error = xfs_trans_reserve(tp, &M_RES(mp)->tr_itruncate, 0, 0);
 	if (error) {
-		xfs_trans_cancel(tp);
+		xfs_trans_cancel(tp, 0);
 		xfs_iunlock(ip, XFS_IOLOCK_EXCL);
 		goto out_put;
 	}
@@ -252,14 +252,15 @@ xfs_qm_scall_trunc_qfile(
 
 	error = xfs_itruncate_extents(&tp, ip, XFS_DATA_FORK, 0);
 	if (error) {
-		xfs_trans_cancel(tp);
+		xfs_trans_cancel(tp, XFS_TRANS_RELEASE_LOG_RES |
+				     XFS_TRANS_ABORT);
 		goto out_unlock;
 	}
 
 	ASSERT(ip->i_d.di_nextents == 0);
 
 	xfs_trans_ichgtime(tp, ip, XFS_ICHGTIME_MOD | XFS_ICHGTIME_CHG);
-	error = xfs_trans_commit(tp);
+	error = xfs_trans_commit(tp, XFS_TRANS_RELEASE_LOG_RES);
 
 out_unlock:
 	xfs_iunlock(ip, XFS_ILOCK_EXCL | XFS_IOLOCK_EXCL);
@@ -436,7 +437,7 @@ xfs_qm_scall_setqlim(
 	tp = xfs_trans_alloc(mp, XFS_TRANS_QM_SETQLIM);
 	error = xfs_trans_reserve(tp, &M_RES(mp)->tr_qm_setqlim, 0, 0);
 	if (error) {
-		xfs_trans_cancel(tp);
+		xfs_trans_cancel(tp, 0);
 		goto out_rele;
 	}
 
@@ -547,7 +548,7 @@ xfs_qm_scall_setqlim(
 	dqp->dq_flags |= XFS_DQ_DIRTY;
 	xfs_trans_log_dquot(tp, dqp);
 
-	error = xfs_trans_commit(tp);
+	error = xfs_trans_commit(tp, 0);
 
 out_rele:
 	xfs_qm_dqrele(dqp);
@@ -570,7 +571,7 @@ xfs_qm_log_quotaoff_end(
 
 	error = xfs_trans_reserve(tp, &M_RES(mp)->tr_qm_equotaoff, 0, 0);
 	if (error) {
-		xfs_trans_cancel(tp);
+		xfs_trans_cancel(tp, 0);
 		return error;
 	}
 
@@ -584,7 +585,8 @@ xfs_qm_log_quotaoff_end(
 	 * We don't care about quotoff's performance.
 	 */
 	xfs_trans_set_sync(tp);
-	return xfs_trans_commit(tp);
+	error = xfs_trans_commit(tp, 0);
+	return error;
 }
 
 
@@ -603,7 +605,7 @@ xfs_qm_log_quotaoff(
 	tp = xfs_trans_alloc(mp, XFS_TRANS_QM_QUOTAOFF);
 	error = xfs_trans_reserve(tp, &M_RES(mp)->tr_qm_quotaoff, 0, 0);
 	if (error) {
-		xfs_trans_cancel(tp);
+		xfs_trans_cancel(tp, 0);
 		goto out;
 	}
 
@@ -622,7 +624,7 @@ xfs_qm_log_quotaoff(
 	 * We don't care about quotoff's performance.
 	 */
 	xfs_trans_set_sync(tp);
-	error = xfs_trans_commit(tp);
+	error = xfs_trans_commit(tp, 0);
 	if (error)
 		goto out;
 

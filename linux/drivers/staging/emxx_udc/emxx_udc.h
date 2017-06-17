@@ -11,10 +11,19 @@
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program; if not, write to the Free Software Foundation,
+ *  Inc., 51 Franklin Street, Suite 500, Boston, MA 02110-1335, USA.
  */
+
+
+
 
 #ifndef _LINUX_EMXX_H
 #define _LINUX_EMXX_H
+
+
 
 /*---------------------------------------------------------------------------*/
 /*----------------- Default undef */
@@ -23,14 +32,19 @@
 #define UDC_DEBUG_DUMP
 #endif
 
+/* #define USE_INT_COUNT_OVER */
+
 /*----------------- Default define */
 #define	USE_DMA	1
 #define USE_SUSPEND_WAIT	1
+
+
 
 #ifndef TRUE
 #define TRUE	1
 #define FALSE	0
 #endif
+
 
 /*------------ Board dependence(Resource) */
 #define	VBUS_VALUE		GPIO_VBUS
@@ -46,10 +60,14 @@
 /* DMA Abort wait time ms */
 #define DMA_DISABLE_TIME		10
 
+
+
 /*------------ Controller dependence */
 #define NUM_ENDPOINTS		14		/* Endpoint */
 #define REG_EP_NUM		15		/* Endpoint Register */
 #define DMA_MAX_COUNT		256		/* DMA Block */
+
+
 
 #define EPC_RST_DISABLE_TIME		1	/* 1 usec */
 #define EPC_DIRPD_DISABLE_TIME		1	/* 1 msec */
@@ -59,9 +77,11 @@
 #define CHATGER_TIME			700	/* 700msec */
 #define USB_SUSPEND_TIME		2000	/* 2 sec */
 
+
 /* U2F FLAG */
 #define U2F_ENABLE		1
 #define U2F_DISABLE		0
+
 
 /*------- BIT */
 #define BIT00		0x00000001
@@ -97,6 +117,14 @@
 #define BIT30		0x40000000
 #define BIT31		0x80000000
 
+#if 0
+/*------- (0x0000) USB Control Register */
+#define USBTESTMODE			(BIT18+BIT17+BIT16)
+#define TEST_J				BIT16
+#define TEST_K				BIT17
+#define TEST_SE0_NAK			(BIT17+BIT16)
+#define TEST_PACKET			BIT18
+#endif
 #define TEST_FORCE_ENABLE		(BIT18+BIT16)
 
 #define INT_SEL				BIT10
@@ -442,6 +470,8 @@
 /*------- (0x1118:) EPnTADR Register */
 #define EPn_TADR			0xFFFFFFFF	/* RW */
 
+
+
 /*===========================================================================*/
 /* Struct */
 /*------- ep_regs */
@@ -506,6 +536,13 @@ struct fc_regs {
 	u8 Reserved1200[0x1000-0x200];	/* Reserved */
 } __aligned(32);
 
+
+
+
+
+
+
+
 #define EP0_PACKETSIZE			64
 #define EP_PACKETSIZE			1024
 
@@ -516,7 +553,9 @@ struct fc_regs {
 #define D_FS_RAM_SIZE_BULK		64
 #define D_HS_RAM_SIZE_BULK		512
 
+
 struct nbu2ss_udc;
+
 
 enum ep0_state {
 	EP0_IDLE,
@@ -561,6 +600,7 @@ struct nbu2ss_ep {
 	u8		*virt_buf;
 	dma_addr_t	phys_buf;
 };
+
 
 struct nbu2ss_udc {
 	struct usb_gadget gadget;

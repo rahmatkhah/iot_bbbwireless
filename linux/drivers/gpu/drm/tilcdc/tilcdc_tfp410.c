@@ -54,6 +54,14 @@ struct tfp410_encoder {
 };
 #define to_tfp410_encoder(x) container_of(x, struct tfp410_encoder, base)
 
+
+static void tfp410_encoder_destroy(struct drm_encoder *encoder)
+{
+	struct tfp410_encoder *tfp410_encoder = to_tfp410_encoder(encoder);
+	drm_encoder_cleanup(encoder);
+	kfree(tfp410_encoder);
+}
+
 static void tfp410_encoder_dpms(struct drm_encoder *encoder, int mode)
 {
 	struct tfp410_encoder *tfp410_encoder = to_tfp410_encoder(encoder);
@@ -99,7 +107,7 @@ static void tfp410_encoder_mode_set(struct drm_encoder *encoder,
 }
 
 static const struct drm_encoder_funcs tfp410_encoder_funcs = {
-		.destroy        = drm_encoder_cleanup,
+		.destroy        = tfp410_encoder_destroy,
 };
 
 static const struct drm_encoder_helper_funcs tfp410_encoder_helper_funcs = {
@@ -117,8 +125,7 @@ static struct drm_encoder *tfp410_encoder_create(struct drm_device *dev,
 	struct drm_encoder *encoder;
 	int ret;
 
-	tfp410_encoder = devm_kzalloc(dev->dev, sizeof(*tfp410_encoder),
-				      GFP_KERNEL);
+	tfp410_encoder = kzalloc(sizeof(*tfp410_encoder), GFP_KERNEL);
 	if (!tfp410_encoder) {
 		dev_err(dev->dev, "allocation failed\n");
 		return NULL;
@@ -140,7 +147,7 @@ static struct drm_encoder *tfp410_encoder_create(struct drm_device *dev,
 	return encoder;
 
 fail:
-	drm_encoder_cleanup(encoder);
+	tfp410_encoder_destroy(encoder);
 	return NULL;
 }
 
@@ -159,8 +166,10 @@ struct tfp410_connector {
 
 static void tfp410_connector_destroy(struct drm_connector *connector)
 {
+	struct tfp410_connector *tfp410_connector = to_tfp410_connector(connector);
 	drm_connector_unregister(connector);
 	drm_connector_cleanup(connector);
+	kfree(tfp410_connector);
 }
 
 static enum drm_connector_status tfp410_connector_detect(
@@ -228,8 +237,7 @@ static struct drm_connector *tfp410_connector_create(struct drm_device *dev,
 	struct drm_connector *connector;
 	int ret;
 
-	tfp410_connector = devm_kzalloc(dev->dev, sizeof(*tfp410_connector),
-					GFP_KERNEL);
+	tfp410_connector = kzalloc(sizeof(*tfp410_connector), GFP_KERNEL);
 	if (!tfp410_connector) {
 		dev_err(dev->dev, "allocation failed\n");
 		return NULL;
@@ -314,7 +322,7 @@ static int tfp410_probe(struct platform_device *pdev)
 		return -ENXIO;
 	}
 
-	tfp410_mod = devm_kzalloc(&pdev->dev, sizeof(*tfp410_mod), GFP_KERNEL);
+	tfp410_mod = kzalloc(sizeof(*tfp410_mod), GFP_KERNEL);
 	if (!tfp410_mod)
 		return -ENOMEM;
 
@@ -367,6 +375,7 @@ fail_adapter:
 	i2c_put_adapter(tfp410_mod->i2c);
 
 fail:
+	kfree(tfp410_mod);
 	tilcdc_module_cleanup(mod);
 	return ret;
 }
@@ -380,6 +389,7 @@ static int tfp410_remove(struct platform_device *pdev)
 	gpio_free(tfp410_mod->gpio);
 
 	tilcdc_module_cleanup(mod);
+	kfree(tfp410_mod);
 
 	return 0;
 }

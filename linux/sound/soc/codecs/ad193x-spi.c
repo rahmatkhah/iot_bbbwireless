@@ -16,7 +16,6 @@
 
 static int ad193x_spi_probe(struct spi_device *spi)
 {
-	const struct spi_device_id *id = spi_get_device_id(spi);
 	struct regmap_config config;
 
 	config = ad193x_regmap_config;
@@ -25,8 +24,7 @@ static int ad193x_spi_probe(struct spi_device *spi)
 	config.read_flag_mask = 0x09;
 	config.write_flag_mask = 0x08;
 
-	return ad193x_probe(&spi->dev, devm_regmap_init_spi(spi, &config),
-			    (enum ad193x_type)id->driver_data);
+	return ad193x_probe(&spi->dev, devm_regmap_init_spi(spi, &config));
 }
 
 static int ad193x_spi_remove(struct spi_device *spi)
@@ -36,23 +34,28 @@ static int ad193x_spi_remove(struct spi_device *spi)
 }
 
 static const struct spi_device_id ad193x_spi_id[] = {
-	{ "ad193x", AD193X },
-	{ "ad1933", AD1933 },
-	{ "ad1934", AD1934 },
-	{ "ad1938", AD193X },
-	{ "ad1939", AD193X },
-	{ "adau1328", AD193X },
-	{ }
+	{ "ad1938", },
+	{ "ad1939", },
+	{ },
 };
 MODULE_DEVICE_TABLE(spi, ad193x_spi_id);
+
+static const struct of_device_id ad193x_of_match[] = {
+	{ .compatible = "analog,ad1938", },
+	{ .compatible = "analog,ad1939", },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, ad193x_of_match);
 
 static struct spi_driver ad193x_spi_driver = {
 	.driver = {
 		.name	= "ad193x",
+		.owner	= THIS_MODULE,
+		.of_match_table = ad193x_of_match,
 	},
 	.probe		= ad193x_spi_probe,
 	.remove		= ad193x_spi_remove,
-	.id_table	= ad193x_spi_id,
+	.id_table	= ad193x_spi_id
 };
 module_spi_driver(ad193x_spi_driver);
 

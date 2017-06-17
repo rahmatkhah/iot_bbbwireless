@@ -8,7 +8,6 @@
 #ifndef __ASSEMBLER__
 
 #include <asm/cputype.h>
-#include <asm/errno.h>
 
 static inline bool scu_a9_has_base(void)
 {

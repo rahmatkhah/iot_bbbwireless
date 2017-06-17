@@ -93,7 +93,6 @@
 #ifdef CONFIG_INET
 #include <net/inet_common.h>
 #endif
-#include <linux/bpf.h>
 
 #include "internal.h"
 
@@ -231,8 +230,6 @@ struct packet_skb_cb {
 	} sa;
 };
 
-#define vio_le() virtio_legacy_is_little_endian()
-
 #define PACKET_SKB_CB(__skb)	((struct packet_skb_cb *)((__skb)->cb))
 
 #define GET_PBDQC_FROM_RB(x)	((struct tpacket_kbdq_core *)(&(x)->prb_bdqc))
@@ -250,7 +247,7 @@ static void __fanout_link(struct sock *sk, struct packet_sock *po);
 static int packet_direct_xmit(struct sk_buff *skb)
 {
 	struct net_device *dev = skb->dev;
-	struct sk_buff *orig_skb = skb;
+	netdev_features_t features;
 	struct netdev_queue *txq;
 	int ret = NETDEV_TX_BUSY;
 
@@ -258,8 +255,9 @@ static int packet_direct_xmit(struct sk_buff *skb)
 		     !netif_carrier_ok(dev)))
 		goto drop;
 
-	skb = validate_xmit_skb_list(skb, dev);
-	if (skb != orig_skb)
+	features = netif_skb_features(skb);
+	if (skb_needs_linearize(skb, features) &&
+	    __skb_linearize(skb))
 		goto drop;
 
 	txq = skb_get_tx_queue(dev, skb);
@@ -279,7 +277,7 @@ static int packet_direct_xmit(struct sk_buff *skb)
 	return ret;
 drop:
 	atomic_long_inc(&dev->tx_dropped);
-	kfree_skb_list(skb);
+	kfree_skb(skb);
 	return NET_XMIT_DROP;
 }
 
@@ -521,11 +519,13 @@ static void prb_del_retire_blk_timer(struct tpacket_kbdq_core *pkc)
 }
 
 static void prb_shutdown_retire_blk_timer(struct packet_sock *po,
+		int tx_ring,
 		struct sk_buff_head *rb_queue)
 {
 	struct tpacket_kbdq_core *pkc;
 
-	pkc = GET_PBDQC_FROM_RB(&po->rx_ring);
+	pkc = tx_ring ? GET_PBDQC_FROM_RB(&po->tx_ring) :
+			GET_PBDQC_FROM_RB(&po->rx_ring);
 
 	spin_lock_bh(&rb_queue->lock);
 	pkc->delete_blk_timer = 1;
@@ -544,11 +544,15 @@ static void prb_init_blk_timer(struct packet_sock *po,
 	pkc->retire_blk_timer.expires = jiffies;
 }
 
-static void prb_setup_retire_blk_timer(struct packet_sock *po)
+static void prb_setup_retire_blk_timer(struct packet_sock *po, int tx_ring)
 {
 	struct tpacket_kbdq_core *pkc;
 
-	pkc = GET_PBDQC_FROM_RB(&po->rx_ring);
+	if (tx_ring)
+		BUG();
+
+	pkc = tx_ring ? GET_PBDQC_FROM_RB(&po->tx_ring) :
+			GET_PBDQC_FROM_RB(&po->rx_ring);
 	prb_init_blk_timer(po, pkc, prb_retire_rx_blk_timer_expired);
 }
 
@@ -604,7 +608,7 @@ static void prb_init_ft_ops(struct tpacket_kbdq_core *p1,
 static void init_prb_bdqc(struct packet_sock *po,
 			struct packet_ring_buffer *rb,
 			struct pgv *pg_vec,
-			union tpacket_req_u *req_u)
+			union tpacket_req_u *req_u, int tx_ring)
 {
 	struct tpacket_kbdq_core *p1 = GET_PBDQC_FROM_RB(rb);
 	struct tpacket_block_desc *pbd;
@@ -631,7 +635,7 @@ static void init_prb_bdqc(struct packet_sock *po,
 
 	p1->max_frame_len = p1->kblk_size - BLK_PLUS_PRIV(p1->blk_sizeof_priv);
 	prb_init_ft_ops(p1, req_u);
-	prb_setup_retire_blk_timer(po);
+	prb_setup_retire_blk_timer(po, tx_ring);
 	prb_open_block(p1, pbd);
 }
 
@@ -1231,81 +1235,27 @@ static void packet_free_pending(struct packet_sock *po)
 	free_percpu(po->tx_ring.pending_refcnt);
 }
 
-#define ROOM_POW_OFF	2
-#define ROOM_NONE	0x0
-#define ROOM_LOW	0x1
-#define ROOM_NORMAL	0x2
-
-static bool __tpacket_has_room(struct packet_sock *po, int pow_off)
-{
-	int idx, len;
-
-	len = po->rx_ring.frame_max + 1;
-	idx = po->rx_ring.head;
-	if (pow_off)
-		idx += len >> pow_off;
-	if (idx >= len)
-		idx -= len;
-	return packet_lookup_frame(po, &po->rx_ring, idx, TP_STATUS_KERNEL);
-}
-
-static bool __tpacket_v3_has_room(struct packet_sock *po, int pow_off)
-{
-	int idx, len;
-
-	len = po->rx_ring.prb_bdqc.knum_blocks;
-	idx = po->rx_ring.prb_bdqc.kactive_blk_num;
-	if (pow_off)
-		idx += len >> pow_off;
-	if (idx >= len)
-		idx -= len;
-	return prb_lookup_block(po, &po->rx_ring, idx, TP_STATUS_KERNEL);
-}
-
-static int __packet_rcv_has_room(struct packet_sock *po, struct sk_buff *skb)
+static bool packet_rcv_has_room(struct packet_sock *po, struct sk_buff *skb)
 {
 	struct sock *sk = &po->sk;
-	int ret = ROOM_NONE;
-
-	if (po->prot_hook.func != tpacket_rcv) {
-		int avail = sk->sk_rcvbuf - atomic_read(&sk->sk_rmem_alloc)
-					  - (skb ? skb->truesize : 0);
-		if (avail > (sk->sk_rcvbuf >> ROOM_POW_OFF))
-			return ROOM_NORMAL;
-		else if (avail > 0)
-			return ROOM_LOW;
-		else
-			return ROOM_NONE;
-	}
-
-	if (po->tp_version == TPACKET_V3) {
-		if (__tpacket_v3_has_room(po, ROOM_POW_OFF))
-			ret = ROOM_NORMAL;
-		else if (__tpacket_v3_has_room(po, 0))
-			ret = ROOM_LOW;
-	} else {
-		if (__tpacket_has_room(po, ROOM_POW_OFF))
-			ret = ROOM_NORMAL;
-		else if (__tpacket_has_room(po, 0))
-			ret = ROOM_LOW;
-	}
-
-	return ret;
-}
-
-static int packet_rcv_has_room(struct packet_sock *po, struct sk_buff *skb)
-{
-	int ret;
 	bool has_room;
 
-	spin_lock_bh(&po->sk.sk_receive_queue.lock);
-	ret = __packet_rcv_has_room(po, skb);
-	has_room = ret == ROOM_NORMAL;
-	if (po->pressure == has_room)
-		po->pressure = !has_room;
-	spin_unlock_bh(&po->sk.sk_receive_queue.lock);
+	if (po->prot_hook.func != tpacket_rcv)
+		return (atomic_read(&sk->sk_rmem_alloc) + skb->truesize)
+			<= sk->sk_rcvbuf;
 
-	return ret;
+	spin_lock(&sk->sk_receive_queue.lock);
+	if (po->tp_version == TPACKET_V3)
+		has_room = prb_lookup_block(po, &po->rx_ring,
+					    po->rx_ring.prb_bdqc.kactive_blk_num,
+					    TP_STATUS_KERNEL);
+	else
+		has_room = packet_lookup_frame(po, &po->rx_ring,
+					       po->rx_ring.head,
+					       TP_STATUS_KERNEL);
+	spin_unlock(&sk->sk_receive_queue.lock);
+
+	return has_room;
 }
 
 static void packet_sock_destruct(struct sock *sk)
@@ -1323,25 +1273,11 @@ static void packet_sock_destruct(struct sock *sk)
 	sk_refcnt_debug_dec(sk);
 }
 
-static bool fanout_flow_is_huge(struct packet_sock *po, struct sk_buff *skb)
-{
-	u32 rxhash;
-	int i, count = 0;
-
-	rxhash = skb_get_hash(skb);
-	for (i = 0; i < ROLLOVER_HLEN; i++)
-		if (po->rollover->history[i] == rxhash)
-			count++;
-
-	po->rollover->history[prandom_u32() % ROLLOVER_HLEN] = rxhash;
-	return count > (ROLLOVER_HLEN >> 1);
-}
-
 static unsigned int fanout_demux_hash(struct packet_fanout *f,
 				      struct sk_buff *skb,
 				      unsigned int num)
 {
-	return reciprocal_scale(__skb_get_hash_symmetric(skb), num);
+	return reciprocal_scale(skb_get_hash(skb), num);
 }
 
 static unsigned int fanout_demux_lb(struct packet_fanout *f,
@@ -1369,40 +1305,22 @@ static unsigned int fanout_demux_rnd(struct packet_fanout *f,
 
 static unsigned int fanout_demux_rollover(struct packet_fanout *f,
 					  struct sk_buff *skb,
-					  unsigned int idx, bool try_self,
+					  unsigned int idx, unsigned int skip,
 					  unsigned int num)
 {
-	struct packet_sock *po, *po_next, *po_skip = NULL;
-	unsigned int i, j, room = ROOM_NONE;
+	unsigned int i, j;
 
-	po = pkt_sk(f->arr[idx]);
-
-	if (try_self) {
-		room = packet_rcv_has_room(po, skb);
-		if (room == ROOM_NORMAL ||
-		    (room == ROOM_LOW && !fanout_flow_is_huge(po, skb)))
-			return idx;
-		po_skip = po;
-	}
-
-	i = j = min_t(int, po->rollover->sock, num - 1);
+	i = j = min_t(int, f->next[idx], num - 1);
 	do {
-		po_next = pkt_sk(f->arr[i]);
-		if (po_next != po_skip && !po_next->pressure &&
-		    packet_rcv_has_room(po_next, skb) == ROOM_NORMAL) {
+		if (i != skip && packet_rcv_has_room(pkt_sk(f->arr[i]), skb)) {
 			if (i != j)
-				po->rollover->sock = i;
-			atomic_long_inc(&po->rollover->num);
-			if (room == ROOM_LOW)
-				atomic_long_inc(&po->rollover->num_huge);
+				f->next[idx] = i;
 			return i;
 		}
-
 		if (++i == num)
 			i = 0;
 	} while (i != j);
 
-	atomic_long_inc(&po->rollover->num_failed);
 	return idx;
 }
 
@@ -1411,22 +1329,6 @@ static unsigned int fanout_demux_qm(struct packet_fanout *f,
 				    unsigned int num)
 {
 	return skb_get_queue_mapping(skb) % num;
-}
-
-static unsigned int fanout_demux_bpf(struct packet_fanout *f,
-				     struct sk_buff *skb,
-				     unsigned int num)
-{
-	struct bpf_prog *prog;
-	unsigned int ret = 0;
-
-	rcu_read_lock();
-	prog = rcu_dereference(f->bpf_prog);
-	if (prog)
-		ret = bpf_prog_run_clear_cb(prog, skb) % num;
-	rcu_read_unlock();
-
-	return ret;
 }
 
 static bool fanout_has_flag(struct packet_fanout *f, u16 flag)
@@ -1439,17 +1341,17 @@ static int packet_rcv_fanout(struct sk_buff *skb, struct net_device *dev,
 {
 	struct packet_fanout *f = pt->af_packet_priv;
 	unsigned int num = READ_ONCE(f->num_members);
-	struct net *net = read_pnet(&f->net);
 	struct packet_sock *po;
 	unsigned int idx;
 
-	if (!net_eq(dev_net(dev), net) || !num) {
+	if (!net_eq(dev_net(dev), read_pnet(&f->net)) ||
+	    !num) {
 		kfree_skb(skb);
 		return 0;
 	}
 
 	if (fanout_has_flag(f, PACKET_FANOUT_FLAG_DEFRAG)) {
-		skb = ip_check_defrag(net, skb, IP_DEFRAG_AF_PACKET);
+		skb = ip_check_defrag(skb, IP_DEFRAG_AF_PACKET);
 		if (!skb)
 			return 0;
 	}
@@ -1471,18 +1373,17 @@ static int packet_rcv_fanout(struct sk_buff *skb, struct net_device *dev,
 		idx = fanout_demux_qm(f, skb, num);
 		break;
 	case PACKET_FANOUT_ROLLOVER:
-		idx = fanout_demux_rollover(f, skb, 0, false, num);
-		break;
-	case PACKET_FANOUT_CBPF:
-	case PACKET_FANOUT_EBPF:
-		idx = fanout_demux_bpf(f, skb, num);
+		idx = fanout_demux_rollover(f, skb, 0, (unsigned int) -1, num);
 		break;
 	}
 
-	if (fanout_has_flag(f, PACKET_FANOUT_FLAG_ROLLOVER))
-		idx = fanout_demux_rollover(f, skb, idx, true, num);
-
 	po = pkt_sk(f->arr[idx]);
+	if (fanout_has_flag(f, PACKET_FANOUT_FLAG_ROLLOVER) &&
+	    unlikely(!packet_rcv_has_room(po, skb))) {
+		idx = fanout_demux_rollover(f, skb, idx, idx, num);
+		po = pkt_sk(f->arr[idx]);
+	}
+
 	return po->prot_hook.func(skb, dev, &po->prot_hook, orig_dev);
 }
 
@@ -1498,8 +1399,6 @@ static void __fanout_link(struct sock *sk, struct packet_sock *po)
 	f->arr[f->num_members] = sk;
 	smp_wmb();
 	f->num_members++;
-	if (f->num_members == 1)
-		dev_add_pack(&f->prot_hook);
 	spin_unlock(&f->lock);
 }
 
@@ -1516,119 +1415,19 @@ static void __fanout_unlink(struct sock *sk, struct packet_sock *po)
 	BUG_ON(i >= f->num_members);
 	f->arr[i] = f->arr[f->num_members - 1];
 	f->num_members--;
-	if (f->num_members == 0)
-		__dev_remove_pack(&f->prot_hook);
 	spin_unlock(&f->lock);
 }
 
 static bool match_fanout_group(struct packet_type *ptype, struct sock *sk)
 {
-	if (sk->sk_family != PF_PACKET)
-		return false;
+	if (ptype->af_packet_priv == (void *)((struct packet_sock *)sk)->fanout)
+		return true;
 
-	return ptype->af_packet_priv == pkt_sk(sk)->fanout;
-}
-
-static void fanout_init_data(struct packet_fanout *f)
-{
-	switch (f->type) {
-	case PACKET_FANOUT_LB:
-		atomic_set(&f->rr_cur, 0);
-		break;
-	case PACKET_FANOUT_CBPF:
-	case PACKET_FANOUT_EBPF:
-		RCU_INIT_POINTER(f->bpf_prog, NULL);
-		break;
-	}
-}
-
-static void __fanout_set_data_bpf(struct packet_fanout *f, struct bpf_prog *new)
-{
-	struct bpf_prog *old;
-
-	spin_lock(&f->lock);
-	old = rcu_dereference_protected(f->bpf_prog, lockdep_is_held(&f->lock));
-	rcu_assign_pointer(f->bpf_prog, new);
-	spin_unlock(&f->lock);
-
-	if (old) {
-		synchronize_net();
-		bpf_prog_destroy(old);
-	}
-}
-
-static int fanout_set_data_cbpf(struct packet_sock *po, char __user *data,
-				unsigned int len)
-{
-	struct bpf_prog *new;
-	struct sock_fprog fprog;
-	int ret;
-
-	if (sock_flag(&po->sk, SOCK_FILTER_LOCKED))
-		return -EPERM;
-	if (len != sizeof(fprog))
-		return -EINVAL;
-	if (copy_from_user(&fprog, data, len))
-		return -EFAULT;
-
-	ret = bpf_prog_create_from_user(&new, &fprog, NULL, false);
-	if (ret)
-		return ret;
-
-	__fanout_set_data_bpf(po->fanout, new);
-	return 0;
-}
-
-static int fanout_set_data_ebpf(struct packet_sock *po, char __user *data,
-				unsigned int len)
-{
-	struct bpf_prog *new;
-	u32 fd;
-
-	if (sock_flag(&po->sk, SOCK_FILTER_LOCKED))
-		return -EPERM;
-	if (len != sizeof(fd))
-		return -EINVAL;
-	if (copy_from_user(&fd, data, len))
-		return -EFAULT;
-
-	new = bpf_prog_get(fd);
-	if (IS_ERR(new))
-		return PTR_ERR(new);
-	if (new->type != BPF_PROG_TYPE_SOCKET_FILTER) {
-		bpf_prog_put(new);
-		return -EINVAL;
-	}
-
-	__fanout_set_data_bpf(po->fanout, new);
-	return 0;
-}
-
-static int fanout_set_data(struct packet_sock *po, char __user *data,
-			   unsigned int len)
-{
-	switch (po->fanout->type) {
-	case PACKET_FANOUT_CBPF:
-		return fanout_set_data_cbpf(po, data, len);
-	case PACKET_FANOUT_EBPF:
-		return fanout_set_data_ebpf(po, data, len);
-	default:
-		return -EINVAL;
-	};
-}
-
-static void fanout_release_data(struct packet_fanout *f)
-{
-	switch (f->type) {
-	case PACKET_FANOUT_CBPF:
-	case PACKET_FANOUT_EBPF:
-		__fanout_set_data_bpf(f, NULL);
-	};
+	return false;
 }
 
 static int fanout_add(struct sock *sk, u16 id, u16 type_flags)
 {
-	struct packet_rollover *rollover = NULL;
 	struct packet_sock *po = pkt_sk(sk);
 	struct packet_fanout *f, *match;
 	u8 type = type_flags & 0xff;
@@ -1644,35 +1443,18 @@ static int fanout_add(struct sock *sk, u16 id, u16 type_flags)
 	case PACKET_FANOUT_CPU:
 	case PACKET_FANOUT_RND:
 	case PACKET_FANOUT_QM:
-	case PACKET_FANOUT_CBPF:
-	case PACKET_FANOUT_EBPF:
 		break;
 	default:
 		return -EINVAL;
 	}
 
-	mutex_lock(&fanout_mutex);
-
-	err = -EINVAL;
 	if (!po->running)
-		goto out;
+		return -EINVAL;
 
-	err = -EALREADY;
 	if (po->fanout)
-		goto out;
+		return -EALREADY;
 
-	if (type == PACKET_FANOUT_ROLLOVER ||
-	    (type_flags & PACKET_FANOUT_FLAG_ROLLOVER)) {
-		err = -ENOMEM;
-		rollover = kzalloc(sizeof(*rollover), GFP_KERNEL);
-		if (!rollover)
-			goto out;
-		atomic_long_set(&rollover->num, 0);
-		atomic_long_set(&rollover->num_huge, 0);
-		atomic_long_set(&rollover->num_failed, 0);
-		po->rollover = rollover;
-	}
-
+	mutex_lock(&fanout_mutex);
 	match = NULL;
 	list_for_each_entry(f, &fanout_list, list) {
 		if (f->id == id &&
@@ -1693,15 +1475,16 @@ static int fanout_add(struct sock *sk, u16 id, u16 type_flags)
 		match->id = id;
 		match->type = type;
 		match->flags = flags;
+		atomic_set(&match->rr_cur, 0);
 		INIT_LIST_HEAD(&match->list);
 		spin_lock_init(&match->lock);
 		atomic_set(&match->sk_ref, 0);
-		fanout_init_data(match);
 		match->prot_hook.type = po->prot_hook.type;
 		match->prot_hook.dev = po->prot_hook.dev;
 		match->prot_hook.func = packet_rcv_fanout;
 		match->prot_hook.af_packet_priv = match;
 		match->prot_hook.id_match = match_fanout_group;
+		dev_add_pack(&match->prot_hook);
 		list_add(&match->list, &fanout_list);
 	}
 	err = -EINVAL;
@@ -1718,40 +1501,28 @@ static int fanout_add(struct sock *sk, u16 id, u16 type_flags)
 		}
 	}
 out:
-	if (err && rollover) {
-		kfree(rollover);
-		po->rollover = NULL;
-	}
 	mutex_unlock(&fanout_mutex);
 	return err;
 }
 
-/* If pkt_sk(sk)->fanout->sk_ref is zero, this function removes
- * pkt_sk(sk)->fanout from fanout_list and returns pkt_sk(sk)->fanout.
- * It is the responsibility of the caller to call fanout_release_data() and
- * free the returned packet_fanout (after synchronize_net())
- */
-static struct packet_fanout *fanout_release(struct sock *sk)
+static void fanout_release(struct sock *sk)
 {
 	struct packet_sock *po = pkt_sk(sk);
 	struct packet_fanout *f;
 
-	mutex_lock(&fanout_mutex);
 	f = po->fanout;
-	if (f) {
-		po->fanout = NULL;
+	if (!f)
+		return;
 
-		if (atomic_dec_and_test(&f->sk_ref))
-			list_del(&f->list);
-		else
-			f = NULL;
+	mutex_lock(&fanout_mutex);
+	po->fanout = NULL;
 
-		if (po->rollover)
-			kfree_rcu(po->rollover, rcu);
+	if (atomic_dec_and_test(&f->sk_ref)) {
+		list_del(&f->list);
+		dev_remove_pack(&f->prot_hook);
+		kfree(f);
 	}
 	mutex_unlock(&fanout_mutex);
-
-	return f;
 }
 
 static bool packet_extra_vlan_len_allowed(const struct net_device *dev,
@@ -1962,16 +1733,16 @@ out_free:
 	return err;
 }
 
-static unsigned int run_filter(struct sk_buff *skb,
-			       const struct sock *sk,
-			       unsigned int res)
+static unsigned int run_filter(const struct sk_buff *skb,
+				      const struct sock *sk,
+				      unsigned int res)
 {
 	struct sk_filter *filter;
 
 	rcu_read_lock();
 	filter = rcu_dereference(sk->sk_filter);
 	if (filter != NULL)
-		res = bpf_prog_run_clear_cb(filter->prog, skb);
+		res = SK_RUN_FILTER(filter, skb);
 	rcu_read_unlock();
 
 	return res;
@@ -2645,13 +2416,12 @@ static int packet_snd(struct socket *sock, struct msghdr *msg, size_t len)
 	__be16 proto;
 	unsigned char *addr;
 	int err, reserve = 0;
-	struct sockcm_cookie sockc;
 	struct virtio_net_hdr vnet_hdr = { 0 };
 	int offset = 0;
 	int vnet_hdr_len;
 	struct packet_sock *po = pkt_sk(sk);
 	unsigned short gso_type = 0;
-	int hlen, tlen, linear;
+	int hlen, tlen;
 	int extra_len = 0;
 	ssize_t n;
 
@@ -2681,13 +2451,6 @@ static int packet_snd(struct socket *sock, struct msghdr *msg, size_t len)
 	if (unlikely(!(dev->flags & IFF_UP)))
 		goto out_unlock;
 
-	sockc.mark = sk->sk_mark;
-	if (msg->msg_controllen) {
-		err = sock_cmsg_send(sk, msg, &sockc);
-		if (unlikely(err))
-			goto out_unlock;
-	}
-
 	if (sock->type == SOCK_RAW)
 		reserve = dev->hard_header_len;
 	if (po->has_vnet_hdr) {
@@ -2705,15 +2468,15 @@ static int packet_snd(struct socket *sock, struct msghdr *msg, size_t len)
 			goto out_unlock;
 
 		if ((vnet_hdr.flags & VIRTIO_NET_HDR_F_NEEDS_CSUM) &&
-		    (__virtio16_to_cpu(vio_le(), vnet_hdr.csum_start) +
-		     __virtio16_to_cpu(vio_le(), vnet_hdr.csum_offset) + 2 >
-		      __virtio16_to_cpu(vio_le(), vnet_hdr.hdr_len)))
-			vnet_hdr.hdr_len = __cpu_to_virtio16(vio_le(),
-				 __virtio16_to_cpu(vio_le(), vnet_hdr.csum_start) +
-				__virtio16_to_cpu(vio_le(), vnet_hdr.csum_offset) + 2);
+		    (__virtio16_to_cpu(false, vnet_hdr.csum_start) +
+		     __virtio16_to_cpu(false, vnet_hdr.csum_offset) + 2 >
+		      __virtio16_to_cpu(false, vnet_hdr.hdr_len)))
+			vnet_hdr.hdr_len = __cpu_to_virtio16(false,
+				 __virtio16_to_cpu(false, vnet_hdr.csum_start) +
+				__virtio16_to_cpu(false, vnet_hdr.csum_offset) + 2);
 
 		err = -EINVAL;
-		if (__virtio16_to_cpu(vio_le(), vnet_hdr.hdr_len) > len)
+		if (__virtio16_to_cpu(false, vnet_hdr.hdr_len) > len)
 			goto out_unlock;
 
 		if (vnet_hdr.gso_type != VIRTIO_NET_HDR_GSO_NONE) {
@@ -2755,9 +2518,8 @@ static int packet_snd(struct socket *sock, struct msghdr *msg, size_t len)
 	err = -ENOBUFS;
 	hlen = LL_RESERVED_SPACE(dev);
 	tlen = dev->needed_tailroom;
-	linear = __virtio16_to_cpu(vio_le(), vnet_hdr.hdr_len);
-	linear = max(linear, min_t(int, len, dev->hard_header_len));
-	skb = packet_alloc_skb(sk, hlen + tlen, hlen, len, linear,
+	skb = packet_alloc_skb(sk, hlen + tlen, hlen, len,
+			       __virtio16_to_cpu(false, vnet_hdr.hdr_len),
 			       msg->msg_flags & MSG_DONTWAIT, &err);
 	if (skb == NULL)
 		goto out_unlock;
@@ -2793,14 +2555,14 @@ static int packet_snd(struct socket *sock, struct msghdr *msg, size_t len)
 	skb->protocol = proto;
 	skb->dev = dev;
 	skb->priority = sk->sk_priority;
-	skb->mark = sockc.mark;
+	skb->mark = sk->sk_mark;
 
 	packet_pick_tx_queue(dev, skb);
 
 	if (po->has_vnet_hdr) {
 		if (vnet_hdr.flags & VIRTIO_NET_HDR_F_NEEDS_CSUM) {
-			u16 s = __virtio16_to_cpu(vio_le(), vnet_hdr.csum_start);
-			u16 o = __virtio16_to_cpu(vio_le(), vnet_hdr.csum_offset);
+			u16 s = __virtio16_to_cpu(false, vnet_hdr.csum_start);
+			u16 o = __virtio16_to_cpu(false, vnet_hdr.csum_offset);
 			if (!skb_partial_csum_set(skb, s, o)) {
 				err = -EINVAL;
 				goto out_free;
@@ -2808,7 +2570,7 @@ static int packet_snd(struct socket *sock, struct msghdr *msg, size_t len)
 		}
 
 		skb_shinfo(skb)->gso_size =
-			__virtio16_to_cpu(vio_le(), vnet_hdr.gso_size);
+			__virtio16_to_cpu(false, vnet_hdr.gso_size);
 		skb_shinfo(skb)->gso_type = gso_type;
 
 		/* Header must be checked, and gso_segs computed. */
@@ -2860,7 +2622,6 @@ static int packet_release(struct socket *sock)
 {
 	struct sock *sk = sock->sk;
 	struct packet_sock *po;
-	struct packet_fanout *f;
 	struct net *net;
 	union tpacket_req_u req_u;
 
@@ -2900,14 +2661,9 @@ static int packet_release(struct socket *sock)
 		packet_set_ring(sk, &req_u, 1, 1);
 	}
 
-	f = fanout_release(sk);
+	fanout_release(sk);
 
 	synchronize_net();
-
-	if (f) {
-		fanout_release_data(f);
-		kfree(f);
-	}
 	/*
 	 *	Now the socket is dead. No more input will appear.
 	 */
@@ -3022,7 +2778,7 @@ static int packet_bind_spkt(struct socket *sock, struct sockaddr *uaddr,
 			    int addr_len)
 {
 	struct sock *sk = sock->sk;
-	char name[sizeof(uaddr->sa_data) + 1];
+	char name[15];
 
 	/*
 	 *	Check legality
@@ -3030,11 +2786,7 @@ static int packet_bind_spkt(struct socket *sock, struct sockaddr *uaddr,
 
 	if (addr_len != sizeof(struct sockaddr))
 		return -EINVAL;
-	/* uaddr->sa_data comes from the userspace, it's not guaranteed to be
-	 * zero-terminated.
-	 */
-	memcpy(name, uaddr->sa_data, sizeof(uaddr->sa_data));
-	name[sizeof(uaddr->sa_data)] = 0;
+	strlcpy(name, uaddr->sa_data, sizeof(name));
 
 	return packet_do_bind(sk, name, 0, pkt_sk(sk)->num);
 }
@@ -3084,7 +2836,7 @@ static int packet_create(struct net *net, struct socket *sock, int protocol,
 	sock->state = SS_UNCONNECTED;
 
 	err = -ENOBUFS;
-	sk = sk_alloc(net, PF_PACKET, GFP_KERNEL, &packet_proto, kern);
+	sk = sk_alloc(net, PF_PACKET, GFP_KERNEL, &packet_proto);
 	if (sk == NULL)
 		goto out;
 
@@ -3114,7 +2866,6 @@ static int packet_create(struct net *net, struct socket *sock, int protocol,
 
 	spin_lock_init(&po->bind_lock);
 	mutex_init(&po->pg_vec_lock);
-	po->rollover = NULL;
 	po->prot_hook.func = packet_rcv;
 
 	if (sock->type == SOCK_PACKET)
@@ -3192,9 +2943,6 @@ static int packet_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 	if (skb == NULL)
 		goto out;
 
-	if (pkt_sk(sk)->pressure)
-		packet_rcv_has_room(pkt_sk(sk), NULL);
-
 	if (pkt_sk(sk)->has_vnet_hdr) {
 		struct virtio_net_hdr vnet_hdr = { 0 };
 
@@ -3210,9 +2958,9 @@ static int packet_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 
 			/* This is a hint as to how much should be linear. */
 			vnet_hdr.hdr_len =
-				__cpu_to_virtio16(vio_le(), skb_headlen(skb));
+				__cpu_to_virtio16(false, skb_headlen(skb));
 			vnet_hdr.gso_size =
-				__cpu_to_virtio16(vio_le(), sinfo->gso_size);
+				__cpu_to_virtio16(false, sinfo->gso_size);
 			if (sinfo->gso_type & SKB_GSO_TCPV4)
 				vnet_hdr.gso_type = VIRTIO_NET_HDR_GSO_TCPV4;
 			else if (sinfo->gso_type & SKB_GSO_TCPV6)
@@ -3230,9 +2978,9 @@ static int packet_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 
 		if (skb->ip_summed == CHECKSUM_PARTIAL) {
 			vnet_hdr.flags = VIRTIO_NET_HDR_F_NEEDS_CSUM;
-			vnet_hdr.csum_start = __cpu_to_virtio16(vio_le(),
+			vnet_hdr.csum_start = __cpu_to_virtio16(false,
 					  skb_checksum_start_offset(skb));
-			vnet_hdr.csum_offset = __cpu_to_virtio16(vio_le(),
+			vnet_hdr.csum_offset = __cpu_to_virtio16(false,
 							 skb->csum_offset);
 		} else if (skb->ip_summed == CHECKSUM_UNNECESSARY) {
 			vnet_hdr.flags = VIRTIO_NET_HDR_F_DATA_VALID;
@@ -3597,25 +3345,19 @@ packet_setsockopt(struct socket *sock, int level, int optname, char __user *optv
 
 		if (optlen != sizeof(val))
 			return -EINVAL;
+		if (po->rx_ring.pg_vec || po->tx_ring.pg_vec)
+			return -EBUSY;
 		if (copy_from_user(&val, optval, sizeof(val)))
 			return -EFAULT;
 		switch (val) {
 		case TPACKET_V1:
 		case TPACKET_V2:
 		case TPACKET_V3:
-			break;
+			po->tp_version = val;
+			return 0;
 		default:
 			return -EINVAL;
 		}
-		lock_sock(sk);
-		if (po->rx_ring.pg_vec || po->tx_ring.pg_vec) {
-			ret = -EBUSY;
-		} else {
-			po->tp_version = val;
-			ret = 0;
-		}
-		release_sock(sk);
-		return ret;
 	}
 	case PACKET_RESERVE:
 	{
@@ -3627,8 +3369,6 @@ packet_setsockopt(struct socket *sock, int level, int optname, char __user *optv
 			return -EBUSY;
 		if (copy_from_user(&val, optval, sizeof(val)))
 			return -EFAULT;
-		if (val > INT_MAX)
-			return -EINVAL;
 		po->tp_reserve = val;
 		return 0;
 	}
@@ -3708,13 +3448,6 @@ packet_setsockopt(struct socket *sock, int level, int optname, char __user *optv
 
 		return fanout_add(sk, val & 0xffff, val >> 16);
 	}
-	case PACKET_FANOUT_DATA:
-	{
-		if (!po->fanout)
-			return -EINVAL;
-
-		return fanout_set_data(po, optval, optlen);
-	}
 	case PACKET_TX_HAS_OFF:
 	{
 		unsigned int val;
@@ -3754,7 +3487,6 @@ static int packet_getsockopt(struct socket *sock, int level, int optname,
 	struct packet_sock *po = pkt_sk(sk);
 	void *data = &val;
 	union tpacket_stats_u st;
-	struct tpacket_rollover_stats rstats;
 
 	if (level != SOL_PACKET)
 		return -ENOPROTOOPT;
@@ -3829,15 +3561,6 @@ static int packet_getsockopt(struct socket *sock, int level, int optname,
 			((u32)po->fanout->type << 16) |
 			((u32)po->fanout->flags << 24)) :
 		       0);
-		break;
-	case PACKET_ROLLOVER_STATS:
-		if (!po->rollover)
-			return -EINVAL;
-		rstats.tp_all = atomic_long_read(&po->rollover->num);
-		rstats.tp_huge = atomic_long_read(&po->rollover->num_huge);
-		rstats.tp_failed = atomic_long_read(&po->rollover->num_failed);
-		data = &rstats;
-		lv = sizeof(rstats);
 		break;
 	case PACKET_TX_HAS_OFF:
 		val = po->tp_tx_has_off;
@@ -3976,8 +3699,6 @@ static unsigned int packet_poll(struct file *file, struct socket *sock,
 			TP_STATUS_KERNEL))
 			mask |= POLLIN | POLLRDNORM;
 	}
-	if (po->pressure && __packet_rcv_has_room(po, NULL) == ROOM_NORMAL)
-		po->pressure = 0;
 	spin_unlock_bh(&sk->sk_receive_queue.lock);
 	spin_lock_bh(&sk->sk_write_queue.lock);
 	if (po->tx_ring.pg_vec) {
@@ -4099,7 +3820,6 @@ static int packet_set_ring(struct sock *sk, union tpacket_req_u *req_u,
 	/* Added to avoid minimal code churn */
 	struct tpacket_req *req = &req_u->req;
 
-	lock_sock(sk);
 	/* Opening a Tx-ring is NOT supported in TPACKET_V3 */
 	if (!closing && tx_ring && (po->tp_version > TPACKET_V2)) {
 		WARN(1, "Tx-ring is not supported.\n");
@@ -4138,11 +3858,11 @@ static int packet_set_ring(struct sock *sk, union tpacket_req_u *req_u,
 		err = -EINVAL;
 		if (unlikely((int)req->tp_block_size <= 0))
 			goto out;
-		if (unlikely(!PAGE_ALIGNED(req->tp_block_size)))
+		if (unlikely(req->tp_block_size & (PAGE_SIZE - 1)))
 			goto out;
 		if (po->tp_version >= TPACKET_V3 &&
-		    req->tp_block_size <=
-			  BLK_PLUS_PRIV((u64)req_u->req3.tp_sizeof_priv))
+		    (int)(req->tp_block_size -
+			  BLK_PLUS_PRIV(req_u->req3.tp_sizeof_priv)) <= 0)
 			goto out;
 		if (unlikely(req->tp_frame_size < po->tp_hdrlen +
 					po->tp_reserve))
@@ -4150,10 +3870,8 @@ static int packet_set_ring(struct sock *sk, union tpacket_req_u *req_u,
 		if (unlikely(req->tp_frame_size & (TPACKET_ALIGNMENT - 1)))
 			goto out;
 
-		rb->frames_per_block = req->tp_block_size / req->tp_frame_size;
-		if (unlikely(rb->frames_per_block == 0))
-			goto out;
-		if (unlikely(req->tp_block_size > UINT_MAX / req->tp_block_nr))
+		rb->frames_per_block = req->tp_block_size/req->tp_frame_size;
+		if (unlikely(rb->frames_per_block <= 0))
 			goto out;
 		if (unlikely((rb->frames_per_block * req->tp_block_nr) !=
 					req->tp_frame_nr))
@@ -4170,7 +3888,7 @@ static int packet_set_ring(struct sock *sk, union tpacket_req_u *req_u,
 		 * it above but just being paranoid
 		 */
 			if (!tx_ring)
-				init_prb_bdqc(po, rb, pg_vec, req_u);
+				init_prb_bdqc(po, rb, pg_vec, req_u, tx_ring);
 			break;
 		default:
 			break;
@@ -4183,6 +3901,7 @@ static int packet_set_ring(struct sock *sk, union tpacket_req_u *req_u,
 			goto out;
 	}
 
+	lock_sock(sk);
 
 	/* Detach socket from network */
 	spin_lock(&po->bind_lock);
@@ -4229,13 +3948,13 @@ static int packet_set_ring(struct sock *sk, union tpacket_req_u *req_u,
 	if (closing && (po->tp_version > TPACKET_V2)) {
 		/* Because we don't support block-based V3 on tx-ring */
 		if (!tx_ring)
-			prb_shutdown_retire_blk_timer(po, rb_queue);
+			prb_shutdown_retire_blk_timer(po, tx_ring, rb_queue);
 	}
+	release_sock(sk);
 
 	if (pg_vec)
 		free_pg_vec(pg_vec, order, req->tp_block_nr);
 out:
-	release_sock(sk);
 	return err;
 }
 

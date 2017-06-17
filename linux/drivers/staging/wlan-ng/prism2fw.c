@@ -584,12 +584,13 @@ static int mkimage(struct imgchunk *clist, unsigned int *ccnt)
 ----------------------------------------------------------------*/
 static int mkpdrlist(struct pda *pda)
 {
+	int result = 0;
 	u16 *pda16 = (u16 *) pda->buf;
 	int curroff;		/* in 'words' */
 
 	pda->nrec = 0;
 	curroff = 0;
-	while (curroff < (HFA384x_PDA_LEN_MAX / 2 - 1) &&
+	while (curroff < (HFA384x_PDA_LEN_MAX / 2) &&
 	       le16_to_cpu(pda16[curroff + 1]) != HFA384x_PDR_END_OF_PDA) {
 		pda->rec[pda->nrec] = (hfa384x_pdrec_t *) &(pda16[curroff]);
 
@@ -625,14 +626,16 @@ static int mkpdrlist(struct pda *pda)
 		curroff += le16_to_cpu(pda16[curroff]) + 1;
 
 	}
-	if (curroff >= (HFA384x_PDA_LEN_MAX / 2 - 1)) {
+	if (curroff >= (HFA384x_PDA_LEN_MAX / 2)) {
 		pr_err("no end record found or invalid lengths in PDR data, exiting. %x %d\n",
 		       curroff, pda->nrec);
 		return 1;
 	}
-	pda->rec[pda->nrec] = (hfa384x_pdrec_t *) &(pda16[curroff]);
-	(pda->nrec)++;
-	return 0;
+	if (le16_to_cpu(pda16[curroff + 1]) == HFA384x_PDR_END_OF_PDA) {
+		pda->rec[pda->nrec] = (hfa384x_pdrec_t *) &(pda16[curroff]);
+		(pda->nrec)++;
+	}
+	return result;
 }
 
 /*----------------------------------------------------------------
@@ -705,10 +708,7 @@ static int plugimage(struct imgchunk *fchunk, unsigned int nfchunks,
 			continue;
 		}
 
-		/*
-		 * Validate plug address against
-		 * chunk data and identify chunk
-		 */
+		/* Validate plug address against chunk data and identify chunk */
 		for (c = 0; c < nfchunks; c++) {
 			cstart = fchunk[c].addr;
 			cend = fchunk[c].addr + fchunk[c].len;
@@ -923,8 +923,7 @@ static int read_fwfile(const struct ihex_binrec *record)
 				      rcnt,
 				      s3info[ns3info].len,
 				      s3info[ns3info].type);
-			if (((s3info[ns3info].len - 1) * sizeof(u16)) >
-			   sizeof(s3info[ns3info].info)) {
+			if (((s3info[ns3info].len - 1) * sizeof(u16)) > sizeof(s3info[ns3info].info)) {
 				pr_err("S3 inforec length too long - aborting\n");
 				return 1;
 			}

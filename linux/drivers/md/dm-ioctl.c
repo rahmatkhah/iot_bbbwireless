@@ -1843,7 +1843,7 @@ static int ctl_ioctl(uint command, struct dm_ioctl __user *user)
 	if (r)
 		goto out;
 
-	param->data_size = offsetof(struct dm_ioctl, data);
+	param->data_size = sizeof(*param);
 	r = fn(param, input_param_size);
 
 	if (unlikely(param->flags & DM_BUFFER_FULL_FLAG) &&
@@ -1919,7 +1919,9 @@ int __init dm_interface_init(void)
 
 void dm_interface_exit(void)
 {
-	misc_deregister(&_dm_misc);
+	if (misc_deregister(&_dm_misc) < 0)
+		DMERR("misc_deregister failed for control device");
+
 	dm_hash_exit();
 }
 

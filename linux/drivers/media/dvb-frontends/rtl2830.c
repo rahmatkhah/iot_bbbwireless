@@ -392,7 +392,7 @@ err:
 	return ret;
 }
 
-static int rtl2830_read_status(struct dvb_frontend *fe, enum fe_status *status)
+static int rtl2830_read_status(struct dvb_frontend *fe, fe_status_t *status)
 {
 	struct i2c_client *client = fe->demodulator_priv;
 	struct rtl2830_dev *dev = i2c_get_clientdata(client);
@@ -915,6 +915,7 @@ MODULE_DEVICE_TABLE(i2c, rtl2830_id_table);
 
 static struct i2c_driver rtl2830_driver = {
 	.driver = {
+		.owner	= THIS_MODULE,
 		.name	= "rtl2830",
 	},
 	.probe		= rtl2830_probe,

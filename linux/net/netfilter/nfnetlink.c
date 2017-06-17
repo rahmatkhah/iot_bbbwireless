@@ -64,7 +64,7 @@ void nfnl_unlock(__u8 subsys_id)
 EXPORT_SYMBOL_GPL(nfnl_unlock);
 
 #ifdef CONFIG_PROVE_LOCKING
-bool lockdep_nfnl_is_held(u8 subsys_id)
+int lockdep_nfnl_is_held(u8 subsys_id)
 {
 	return lockdep_is_held(&table[subsys_id].mutex);
 }
@@ -269,12 +269,6 @@ static void nfnl_err_deliver(struct list_head *err_list, struct sk_buff *skb)
 	}
 }
 
-enum {
-	NFNL_BATCH_FAILURE	= (1 << 0),
-	NFNL_BATCH_DONE		= (1 << 1),
-	NFNL_BATCH_REPLAY	= (1 << 2),
-};
-
 static void nfnetlink_rcv_batch(struct sk_buff *skb, struct nlmsghdr *nlh,
 				u_int16_t subsys_id)
 {
@@ -282,18 +276,18 @@ static void nfnetlink_rcv_batch(struct sk_buff *skb, struct nlmsghdr *nlh,
 	struct net *net = sock_net(skb->sk);
 	const struct nfnetlink_subsystem *ss;
 	const struct nfnl_callback *nc;
+	bool success = true, done = false;
 	static LIST_HEAD(err_list);
-	u32 status;
 	int err;
 
 	if (subsys_id >= NFNL_SUBSYS_COUNT)
 		return netlink_ack(skb, nlh, -EINVAL);
 replay:
-	status = 0;
-
 	skb = netlink_skb_clone(oskb, GFP_KERNEL);
 	if (!skb)
 		return netlink_ack(oskb, nlh, -ENOMEM);
+
+	skb->sk = oskb->sk;
 
 	nfnl_lock(subsys_id);
 	ss = rcu_dereference_protected(table[subsys_id].subsys,
@@ -326,12 +320,10 @@ replay:
 		nlh = nlmsg_hdr(skb);
 		err = 0;
 
-		if (nlh->nlmsg_len < NLMSG_HDRLEN ||
-		    skb->len < nlh->nlmsg_len ||
-		    nlmsg_len(nlh) < sizeof(struct nfgenmsg)) {
-			nfnl_err_reset(&err_list);
-			status |= NFNL_BATCH_FAILURE;
-			goto done;
+		if (nlmsg_len(nlh) < sizeof(struct nfgenmsg) ||
+		    skb->len < nlh->nlmsg_len) {
+			err = -EINVAL;
+			goto ack;
 		}
 
 		/* Only requests are handled by the kernel */
@@ -344,10 +336,10 @@ replay:
 		if (type == NFNL_MSG_BATCH_BEGIN) {
 			/* Malformed: Batch begin twice */
 			nfnl_err_reset(&err_list);
-			status |= NFNL_BATCH_FAILURE;
+			success = false;
 			goto done;
 		} else if (type == NFNL_MSG_BATCH_END) {
-			status |= NFNL_BATCH_DONE;
+			done = true;
 			goto done;
 		} else if (type < NLMSG_MIN_TYPE) {
 			err = -EINVAL;
@@ -381,7 +373,7 @@ replay:
 				goto ack;
 
 			if (nc->call_batch) {
-				err = nc->call_batch(net, net->nfnl, skb, nlh,
+				err = nc->call_batch(net->nfnl, skb, nlh,
 						     (const struct nlattr **)cda);
 			}
 
@@ -390,8 +382,11 @@ replay:
 			 * original skb.
 			 */
 			if (err == -EAGAIN) {
-				status |= NFNL_BATCH_REPLAY;
-				goto next;
+				nfnl_err_reset(&err_list);
+				ss->abort(oskb);
+				nfnl_unlock(subsys_id);
+				kfree_skb(skb);
+				goto replay;
 			}
 		}
 ack:
@@ -407,7 +402,7 @@ ack:
 				 */
 				nfnl_err_reset(&err_list);
 				netlink_ack(skb, nlmsg_hdr(oskb), -ENOMEM);
-				status |= NFNL_BATCH_FAILURE;
+				success = false;
 				goto done;
 			}
 			/* We don't stop processing the batch on errors, thus,
@@ -415,26 +410,19 @@ ack:
 			 * triggers.
 			 */
 			if (err)
-				status |= NFNL_BATCH_FAILURE;
+				success = false;
 		}
-next:
+
 		msglen = NLMSG_ALIGN(nlh->nlmsg_len);
 		if (msglen > skb->len)
 			msglen = skb->len;
 		skb_pull(skb, msglen);
 	}
 done:
-	if (status & NFNL_BATCH_REPLAY) {
-		ss->abort(oskb);
-		nfnl_err_reset(&err_list);
-		nfnl_unlock(subsys_id);
-		kfree_skb(skb);
-		goto replay;
-	} else if (status == NFNL_BATCH_DONE) {
+	if (success && done)
 		ss->commit(oskb);
-	} else {
+	else
 		ss->abort(oskb);
-	}
 
 	nfnl_err_deliver(&err_list, oskb);
 	nfnl_unlock(subsys_id);
@@ -492,7 +480,7 @@ static int nfnetlink_bind(struct net *net, int group)
 	type = nfnl_group2type[group];
 
 	rcu_read_lock();
-	ss = nfnetlink_get_subsys(type << 8);
+	ss = nfnetlink_get_subsys(type);
 	rcu_read_unlock();
 	if (!ss)
 		request_module("nfnetlink-subsys-%d", type);

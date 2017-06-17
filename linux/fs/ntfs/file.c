@@ -382,7 +382,7 @@ static ssize_t ntfs_prepare_file_for_write(struct kiocb *iocb,
 	base_ni = ni;
 	if (NInoAttr(ni))
 		base_ni = ni->ext.base_ntfs_ino;
-	err = file_remove_privs(file);
+	err = file_remove_suid(file);
 	if (unlikely(err))
 		goto out;
 	/*
@@ -525,8 +525,7 @@ static inline int __ntfs_grab_cache_pages(struct address_space *mapping,
 				}
 			}
 			err = add_to_page_cache_lru(*cached_page, mapping,
-				   index,
-				   mapping_gfp_constraint(mapping, GFP_KERNEL));
+					index, GFP_KERNEL);
 			if (unlikely(err)) {
 				if (err == -EEXIST)
 					continue;

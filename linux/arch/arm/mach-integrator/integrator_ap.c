@@ -37,6 +37,7 @@
 #include <linux/stat.h>
 #include <linux/termios.h>
 
+#include <asm/hardware/arm_timer.h>
 #include <asm/setup.h>
 #include <asm/param.h>		/* HZ */
 #include <asm/mach-types.h>

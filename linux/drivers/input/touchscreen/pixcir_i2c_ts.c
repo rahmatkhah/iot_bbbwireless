@@ -11,6 +11,10 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
 #include <linux/delay.h>
@@ -23,9 +27,11 @@
 #include <linux/input/touchscreen.h>
 #include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
+/*#include <linux/of.h>*/
 #include <linux/of_device.h>
 #include <linux/platform_data/pixcir_i2c_ts.h>
-#include <asm/unaligned.h>
+#include <linux/of_irq.h>
+#include <linux/pm_wakeirq.h>
 
 #define PIXCIR_MAX_SLOTS       5 /* Max fingers supported by driver */
 
@@ -34,18 +40,21 @@ struct pixcir_i2c_ts_data {
 	struct input_dev *input;
 	struct gpio_desc *gpio_attb;
 	struct gpio_desc *gpio_reset;
-	struct gpio_desc *gpio_enable;
-	struct gpio_desc *gpio_wake;
 	const struct pixcir_i2c_chip_data *chip;
-	struct touchscreen_properties prop;
 	int max_fingers;	/* Max fingers supported in this instance */
+	int wakeirq;
 	bool running;
+};
+
+struct pixcir_touch {
+	int x;
+	int y;
+	int id;
 };
 
 struct pixcir_report_data {
 	int num_touches;
-	struct input_mt_pos pos[PIXCIR_MAX_SLOTS];
-	int ids[PIXCIR_MAX_SLOTS];
+	struct pixcir_touch touches[PIXCIR_MAX_SLOTS];
 };
 
 static void pixcir_ts_parse(struct pixcir_i2c_ts_data *tsdata,
@@ -90,11 +99,11 @@ static void pixcir_ts_parse(struct pixcir_i2c_ts_data *tsdata,
 	bufptr = &rdbuf[2];
 
 	for (i = 0; i < touch; i++) {
-		touchscreen_set_mt_pos(&report->pos[i], &tsdata->prop,
-				       get_unaligned_le16(bufptr),
-				       get_unaligned_le16(bufptr + 2));
+		report->touches[i].x = (bufptr[1] << 8) | bufptr[0];
+		report->touches[i].y = (bufptr[3] << 8) | bufptr[2];
+
 		if (chip->has_hw_ids) {
-			report->ids[i] = bufptr[4];
+			report->touches[i].id = bufptr[4];
 			bufptr = bufptr + 5;
 		} else {
 			bufptr = bufptr + 4;
@@ -105,7 +114,9 @@ static void pixcir_ts_parse(struct pixcir_i2c_ts_data *tsdata,
 static void pixcir_ts_report(struct pixcir_i2c_ts_data *ts,
 			     struct pixcir_report_data *report)
 {
+	struct input_mt_pos pos[PIXCIR_MAX_SLOTS];
 	int slots[PIXCIR_MAX_SLOTS];
+	struct pixcir_touch *touch;
 	int n, i, slot;
 	struct device *dev = &ts->client->dev;
 	const struct pixcir_i2c_chip_data *chip = ts->chip;
@@ -114,16 +125,24 @@ static void pixcir_ts_report(struct pixcir_i2c_ts_data *ts,
 	if (n > PIXCIR_MAX_SLOTS)
 		n = PIXCIR_MAX_SLOTS;
 
-	if (!ts->chip->has_hw_ids)
-		input_mt_assign_slots(ts->input, slots, report->pos, n, 0);
+	if (!ts->chip->has_hw_ids) {
+		for (i = 0; i < n; i++) {
+			touch = &report->touches[i];
+			pos[i].x = touch->x;
+			pos[i].y = touch->y;
+		}
+
+		input_mt_assign_slots(ts->input, slots, pos, n, 0);
+	}
 
 	for (i = 0; i < n; i++) {
+		touch = &report->touches[i];
+
 		if (chip->has_hw_ids) {
-			slot = input_mt_get_slot_by_key(ts->input,
-							report->ids[i]);
+			slot = input_mt_get_slot_by_key(ts->input, touch->id);
 			if (slot < 0) {
 				dev_dbg(dev, "no free slot for id 0x%x\n",
-					report->ids[i]);
+					touch->id);
 				continue;
 			}
 		} else {
@@ -131,15 +150,14 @@ static void pixcir_ts_report(struct pixcir_i2c_ts_data *ts,
 		}
 
 		input_mt_slot(ts->input, slot);
-		input_mt_report_slot_state(ts->input, MT_TOOL_FINGER, true);
+		input_mt_report_slot_state(ts->input,
+					   MT_TOOL_FINGER, true);
 
-		input_report_abs(ts->input, ABS_MT_POSITION_X,
-				 report->pos[i].x);
-		input_report_abs(ts->input, ABS_MT_POSITION_Y,
-				 report->pos[i].y);
+		input_event(ts->input, EV_ABS, ABS_MT_POSITION_X, touch->x);
+		input_event(ts->input, EV_ABS, ABS_MT_POSITION_Y, touch->y);
 
 		dev_dbg(dev, "%d: slot %d, x %d, y %d\n",
-			i, slot, report->pos[i].x, report->pos[i].y);
+			i, slot, touch->x, touch->y);
 	}
 
 	input_mt_sync_frame(ts->input);
@@ -193,11 +211,6 @@ static int pixcir_set_power_mode(struct pixcir_i2c_ts_data *ts,
 	struct device *dev = &ts->client->dev;
 	int ret;
 
-	if (mode == PIXCIR_POWER_ACTIVE || mode == PIXCIR_POWER_IDLE) {
-		if (ts->gpio_wake)
-			gpiod_set_value_cansleep(ts->gpio_wake, 1);
-	}
-
 	ret = i2c_smbus_read_byte_data(ts->client, PIXCIR_REG_POWER_MODE);
 	if (ret < 0) {
 		dev_err(dev, "%s: can't read reg 0x%x : %d\n",
@@ -216,11 +229,6 @@ static int pixcir_set_power_mode(struct pixcir_i2c_ts_data *ts,
 		dev_err(dev, "%s: can't write reg 0x%x : %d\n",
 			__func__, PIXCIR_REG_POWER_MODE, ret);
 		return ret;
-	}
-
-	if (mode == PIXCIR_POWER_HALT) {
-		if (ts->gpio_wake)
-			gpiod_set_value_cansleep(ts->gpio_wake, 0);
 	}
 
 	return 0;
@@ -297,11 +305,6 @@ static int pixcir_start(struct pixcir_i2c_ts_data *ts)
 	struct device *dev = &ts->client->dev;
 	int error;
 
-	if (ts->gpio_enable) {
-		gpiod_set_value_cansleep(ts->gpio_enable, 1);
-		msleep(100);
-	}
-
 	/* LEVEL_TOUCH interrupt with active low polarity */
 	error = pixcir_set_int_mode(ts, PIXCIR_INT_LEVEL_TOUCH, 0);
 	if (error) {
@@ -343,9 +346,6 @@ static int pixcir_stop(struct pixcir_i2c_ts_data *ts)
 	/* Wait till running ISR is complete */
 	synchronize_irq(ts->client->irq);
 
-	if (ts->gpio_enable)
-		gpiod_set_value_cansleep(ts->gpio_enable, 0);
-
 	return 0;
 }
 
@@ -380,6 +380,7 @@ static int __maybe_unused pixcir_i2c_ts_suspend(struct device *dev)
 				goto unlock;
 			}
 		}
+
 	} else if (input->users) {
 		ret = pixcir_stop(ts);
 	}
@@ -426,7 +427,13 @@ static const struct of_device_id pixcir_of_match[];
 static int pixcir_parse_dt(struct device *dev,
 			   struct pixcir_i2c_ts_data *tsdata)
 {
-	tsdata->chip = of_device_get_match_data(dev);
+	const struct of_device_id *match;
+
+	match = of_match_device(of_match_ptr(pixcir_of_match), dev);
+	if (!match)
+		return -EINVAL;
+
+	tsdata->chip = (const struct pixcir_i2c_chip_data *)match->data;
 	if (!tsdata->chip)
 		return -EINVAL;
 
@@ -491,7 +498,7 @@ static int pixcir_i2c_ts_probe(struct i2c_client *client,
 	} else {
 		input_set_capability(input, EV_ABS, ABS_MT_POSITION_X);
 		input_set_capability(input, EV_ABS, ABS_MT_POSITION_Y);
-		touchscreen_parse_properties(input, true, &tsdata->prop);
+		touchscreen_parse_properties(input, true);
 		if (!input_abs_get_max(input, ABS_MT_POSITION_X) ||
 		    !input_abs_get_max(input, ABS_MT_POSITION_Y)) {
 			dev_err(dev, "Touchscreen size is not specified\n");
@@ -530,33 +537,19 @@ static int pixcir_i2c_ts_probe(struct i2c_client *client,
 		return error;
 	}
 
-	tsdata->gpio_wake = devm_gpiod_get_optional(dev, "wake",
-						    GPIOD_OUT_HIGH);
-	if (IS_ERR(tsdata->gpio_wake)) {
-		error = PTR_ERR(tsdata->gpio_wake);
-		if (error != -EPROBE_DEFER)
-			dev_err(dev, "Failed to get wake gpio: %d\n", error);
-		return error;
-	}
-
-	tsdata->gpio_enable = devm_gpiod_get_optional(dev, "enable",
-						      GPIOD_OUT_HIGH);
-	if (IS_ERR(tsdata->gpio_enable)) {
-		error = PTR_ERR(tsdata->gpio_enable);
-		if (error != -EPROBE_DEFER)
-			dev_err(dev, "Failed to get enable gpio: %d\n", error);
-		return error;
-	}
-
-	if (tsdata->gpio_enable)
-		msleep(100);
-
 	error = devm_request_threaded_irq(dev, client->irq, NULL, pixcir_ts_isr,
 					  IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
 					  client->name, tsdata);
 	if (error) {
 		dev_err(dev, "failed to request irq %d\n", client->irq);
 		return error;
+	}
+
+	tsdata->wakeirq = of_irq_get(dev->of_node, 1);
+	if (tsdata->wakeirq < 0 && tsdata->wakeirq != -ENODATA &&
+	    tsdata->wakeirq != -EINVAL) {
+		dev_err(dev, "Failed to get wakeirq\n");
+		return tsdata->wakeirq;
 	}
 
 	pixcir_reset(tsdata);
@@ -578,6 +571,23 @@ static int pixcir_i2c_ts_probe(struct i2c_client *client,
 		return error;
 
 	i2c_set_clientdata(client, tsdata);
+	device_init_wakeup(&client->dev, 1);
+
+	/* Register wakeirq */
+	error = (tsdata->wakeirq > 0) ?
+		dev_pm_set_dedicated_wake_irq(dev, tsdata->wakeirq) :
+		dev_pm_set_wake_irq(dev, client->irq);
+	if (error)
+		dev_info(dev, "unable to setup wakeirq %d\n",
+			 error);
+
+	return 0;
+}
+
+static int pixcir_i2c_ts_remove(struct i2c_client *client)
+{
+	dev_pm_clear_wake_irq(&client->dev);
+	device_init_wakeup(&client->dev, 0);
 
 	return 0;
 }
@@ -610,11 +620,13 @@ MODULE_DEVICE_TABLE(of, pixcir_of_match);
 
 static struct i2c_driver pixcir_i2c_ts_driver = {
 	.driver = {
+		.owner	= THIS_MODULE,
 		.name	= "pixcir_ts",
 		.pm	= &pixcir_dev_pm_ops,
 		.of_match_table = of_match_ptr(pixcir_of_match),
 	},
 	.probe		= pixcir_i2c_ts_probe,
+	.remove		= pixcir_i2c_ts_remove,
 	.id_table	= pixcir_i2c_ts_id,
 };
 

@@ -83,7 +83,7 @@ static void omap_gem_dmabuf_release(struct dma_buf *buffer)
 
 
 static int omap_gem_dmabuf_begin_cpu_access(struct dma_buf *buffer,
-		enum dma_data_direction dir)
+		size_t start, size_t len, enum dma_data_direction dir)
 {
 	struct drm_gem_object *obj = buffer->priv;
 	struct page **pages;
@@ -98,7 +98,7 @@ static int omap_gem_dmabuf_begin_cpu_access(struct dma_buf *buffer,
 }
 
 static void omap_gem_dmabuf_end_cpu_access(struct dma_buf *buffer,
-		enum dma_data_direction dir)
+		size_t start, size_t len, enum dma_data_direction dir)
 {
 	struct drm_gem_object *obj = buffer->priv;
 	omap_gem_put_pages(obj);
@@ -163,12 +163,15 @@ static int omap_gem_dmabuf_mmap(struct dma_buf *buffer,
 		struct vm_area_struct *vma)
 {
 	struct drm_gem_object *obj = buffer->priv;
+	struct drm_device *dev = obj->dev;
 	int ret = 0;
 
 	if (WARN_ON(!obj->filp))
 		return -EINVAL;
 
+	mutex_lock(&dev->struct_mutex);
 	ret = drm_gem_mmap_obj(obj, omap_gem_mmap_size(obj), vma);
+	mutex_unlock(&dev->struct_mutex);
 	if (ret < 0)
 		return ret;
 

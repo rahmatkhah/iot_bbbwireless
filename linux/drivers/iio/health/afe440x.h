@@ -71,7 +71,8 @@
 #define AFE440X_CONTROL1_TIMEREN	BIT(8)
 
 /* TIAGAIN register fields */
-#define AFE440X_TIAGAIN_ENSEPGAIN	BIT(15)
+#define AFE440X_TIAGAIN_ENSEPGAIN_MASK	BIT(15)
+#define AFE440X_TIAGAIN_ENSEPGAIN_SHIFT	15
 
 /* CONTROL2 register fields */
 #define AFE440X_CONTROL2_PDN_AFE	BIT(0)
@@ -88,7 +89,22 @@
 #define AFE440X_CONTROL0_WRITE		0x0
 #define AFE440X_CONTROL0_READ		0x1
 
-#define AFE440X_INTENSITY_CHAN(_index, _mask)			\
+struct afe440x_reg_info {
+	unsigned int reg;
+	unsigned int offreg;
+	unsigned int shift;
+	unsigned int mask;
+};
+
+#define AFE440X_REG_INFO(_reg, _offreg, _sm)			\
+	{							\
+		.reg = _reg,					\
+		.offreg = _offreg,				\
+		.shift = _sm ## _SHIFT,				\
+		.mask = _sm ## _MASK,				\
+	}
+
+#define AFE440X_INTENSITY_CHAN(_index, _name, _mask)		\
 	{							\
 		.type = IIO_INTENSITY,				\
 		.channel = _index,				\
@@ -100,22 +116,28 @@
 				.storagebits = 32,		\
 				.endianness = IIO_CPU,		\
 		},						\
+		.extend_name = _name,				\
 		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |	\
 			_mask,					\
-		.indexed = true,				\
 	}
 
-#define AFE440X_CURRENT_CHAN(_index)				\
+#define AFE440X_CURRENT_CHAN(_index, _name)			\
 	{							\
 		.type = IIO_CURRENT,				\
 		.channel = _index,				\
 		.address = _index,				\
-		.scan_index = -1,				\
+		.scan_index = _index,				\
+		.extend_name = _name,				\
 		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |	\
 			BIT(IIO_CHAN_INFO_SCALE),		\
-		.indexed = true,				\
 		.output = true,					\
 	}
+
+enum afe440x_reg_type {
+	SIMPLE,
+	RESISTANCE,
+	CAPACITANCE,
+};
 
 struct afe440x_val_table {
 	int integer;
@@ -142,7 +164,10 @@ static DEVICE_ATTR_RO(_name)
 
 struct afe440x_attr {
 	struct device_attribute dev_attr;
-	unsigned int field;
+	unsigned int reg;
+	unsigned int shift;
+	unsigned int mask;
+	enum afe440x_reg_type type;
 	const struct afe440x_val_table *val_table;
 	unsigned int table_size;
 };
@@ -150,14 +175,17 @@ struct afe440x_attr {
 #define to_afe440x_attr(_dev_attr)				\
 	container_of(_dev_attr, struct afe440x_attr, dev_attr)
 
-#define AFE440X_ATTR(_name, _field, _table)			\
+#define AFE440X_ATTR(_name, _reg, _field, _type, _table, _size)	\
 	struct afe440x_attr afe440x_attr_##_name = {		\
 		.dev_attr = __ATTR(_name, (S_IRUGO | S_IWUSR),	\
 				   afe440x_show_register,	\
 				   afe440x_store_register),	\
-		.field = _field,				\
+		.reg = _reg,					\
+		.shift = _field ## _SHIFT,			\
+		.mask = _field ## _MASK,			\
+		.type = _type,					\
 		.val_table = _table,				\
-		.table_size = ARRAY_SIZE(_table),		\
+		.table_size = _size,				\
 	}
 
 #endif /* _AFE440X_H */

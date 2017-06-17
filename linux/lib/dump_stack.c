@@ -8,6 +8,7 @@
 #include <linux/sched.h>
 #include <linux/smp.h>
 #include <linux/atomic.h>
+#include <linux/locallock.h>
 
 static void __dump_stack(void)
 {
@@ -34,6 +35,8 @@ asmlinkage __visible void dump_stack(void)
 	 * Permit this cpu to perform nested stack dumps while serialising
 	 * against other CPUs
 	 */
+	migrate_disable();
+
 retry:
 	local_irq_save(flags);
 	cpu = smp_processor_id();
@@ -53,6 +56,7 @@ retry:
 	if (!was_locked)
 		atomic_set(&dump_lock, -1);
 
+	migrate_enable();
 	local_irq_restore(flags);
 }
 #else

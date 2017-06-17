@@ -66,18 +66,23 @@
 do {									\
 	compiletime_assert_atomic_type(*p);				\
 	barrier();							\
-	WRITE_ONCE(*p, v);						\
+	ACCESS_ONCE(*p) = (v);						\
 } while (0)
 
 #define smp_load_acquire(p)						\
 ({									\
-	typeof(*p) ___p1 = READ_ONCE(*p);				\
+	typeof(*p) ___p1 = ACCESS_ONCE(*p);				\
 	compiletime_assert_atomic_type(*p);				\
 	barrier();							\
 	___p1;								\
 })
 
-#define smp_store_mb(var, value)	do { WRITE_ONCE(var, value); mb(); } while (0)
+/*
+ * XXX check on this ---I suspect what Linus really wants here is
+ * acquire vs release semantics but we can't discuss this stuff with
+ * Linus just yet.  Grrr...
+ */
+#define set_mb(var, value)	do { (var) = (value); mb(); } while (0)
 
 /*
  * The group barrier in front of the rsm & ssm are necessary to ensure

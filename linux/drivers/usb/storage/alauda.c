@@ -42,9 +42,6 @@
 #include "transport.h"
 #include "protocol.h"
 #include "debug.h"
-#include "scsiglue.h"
-
-#define DRV_NAME "ums-alauda"
 
 MODULE_DESCRIPTION("Driver for Alauda-based card readers");
 MODULE_AUTHOR("Daniel Drake <dsd@gentoo.org>");
@@ -1235,8 +1232,6 @@ static int alauda_transport(struct scsi_cmnd *srb, struct us_data *us)
 	return USB_STOR_TRANSPORT_FAILED;
 }
 
-static struct scsi_host_template alauda_host_template;
-
 static int alauda_probe(struct usb_interface *intf,
 			 const struct usb_device_id *id)
 {
@@ -1244,8 +1239,7 @@ static int alauda_probe(struct usb_interface *intf,
 	int result;
 
 	result = usb_stor_probe1(&us, intf, id,
-			(id - alauda_usb_ids) + alauda_unusual_dev_list,
-			&alauda_host_template);
+			(id - alauda_usb_ids) + alauda_unusual_dev_list);
 	if (result)
 		return result;
 
@@ -1259,7 +1253,7 @@ static int alauda_probe(struct usb_interface *intf,
 }
 
 static struct usb_driver alauda_driver = {
-	.name =		DRV_NAME,
+	.name =		"ums-alauda",
 	.probe =	alauda_probe,
 	.disconnect =	usb_stor_disconnect,
 	.suspend =	usb_stor_suspend,
@@ -1272,4 +1266,4 @@ static struct usb_driver alauda_driver = {
 	.no_dynamic_id = 1,
 };
 
-module_usb_stor_driver(alauda_driver, alauda_host_template, DRV_NAME);
+module_usb_driver(alauda_driver);

@@ -22,7 +22,7 @@ nodes please refer to ../spi/spi-bus.txt.
 Example:
 
 	gpio@0 {
-		compatible = "ti,sn65hvs882", "pisosr-gpio";
+		compatible = "pisosr-gpio";
 		gpio-controller;
 		#gpio-cells = <2>;
 

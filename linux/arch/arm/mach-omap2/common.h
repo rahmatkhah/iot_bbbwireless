@@ -77,13 +77,6 @@ static inline int omap4_pm_init_early(void)
 }
 #endif
 
-#if defined(CONFIG_PM) && (defined(CONFIG_SOC_AM33XX) || \
-	defined(CONFIG_SOC_AM43XX))
-void amx3_common_pm_init(void);
-#else
-static inline void amx3_common_pm_init(void) { }
-#endif
-
 #ifdef CONFIG_OMAP_MUX
 int omap_mux_late_init(void);
 #else
@@ -95,10 +88,12 @@ static inline int omap_mux_late_init(void)
 
 extern void omap2_init_common_infrastructure(void);
 
-extern void omap_init_time(void);
+extern void omap2_sync32k_timer_init(void);
+extern void omap3_sync32k_timer_init(void);
 extern void omap3_secure_sync32k_timer_init(void);
 extern void omap3_gptimer_timer_init(void);
 extern void omap4_local_timer_init(void);
+extern void am43xx_gptimer_timer_init(void);
 #ifdef CONFIG_CACHE_L2X0
 int omap_l2_cache_init(void);
 #define OMAP_L2C_AUX_CTRL	(L2C_AUX_CTRL_SHARED_OVERRIDE | \

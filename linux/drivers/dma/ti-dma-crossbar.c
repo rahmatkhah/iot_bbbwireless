@@ -359,7 +359,6 @@ static int ti_dra7_xbar_probe(struct platform_device *pdev)
 	if (!of_property_read_u32(node, "ti,dma-safe-map", &safe_val))
 		xbar->safe_val = (u16)safe_val;
 
-
 	prop = of_find_property(node, "ti,reserved-dma-request-ranges", &sz);
 	if (prop) {
 		const char pname[] = "ti,reserved-dma-request-ranges";

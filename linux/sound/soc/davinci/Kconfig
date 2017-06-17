@@ -111,4 +111,4 @@ config	SND_DAVINCI_SOC_CTAG_FACE_2_4
 	depends on SND_DAVINCI_SOC_MCASP
 	select SND_SOC_AD193X_SPI
 	help
-	  Say Y if you want to add support for CTAG face-2-4 Audio Card
+	  Say Y if you want to add support for SoC audio on CTAG face-2-4.

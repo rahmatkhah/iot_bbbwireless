@@ -13,7 +13,6 @@
 #include <linux/kernel.h>
 #include <linux/initrd.h>
 #include <linux/memblock.h>
-#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_fdt.h>
 #include <linux/of_reserved_mem.h>
@@ -165,14 +164,11 @@ static void *unflatten_dt_alloc(void **mem, unsigned long size,
  * unflatten_dt_node - Alloc and populate a device_node from the flat tree
  * @blob: The parent device tree blob
  * @mem: Memory chunk to use for allocating device nodes and properties
- * @poffset: pointer to node in flat tree
+ * @p: pointer to node in flat tree
  * @dad: Parent struct device_node
- * @nodepp: The device_node tree created by the call
  * @fpsize: Size of the node path up at the current depth.
- * @dryrun: If true, do not allocate device nodes but still calculate needed
- * memory size
  */
-static void * unflatten_dt_node(const void *blob,
+static void * unflatten_dt_node(void *blob,
 				void *mem,
 				int *poffset,
 				struct device_node *dad,
@@ -185,7 +181,7 @@ static void * unflatten_dt_node(const void *blob,
 	struct property *pp, **prev_pp = NULL;
 	const char *pathp;
 	unsigned int l, allocl;
-	static int depth;
+	static int depth = 0;
 	int old_depth;
 	int offset;
 	int has_name = 0;
@@ -382,7 +378,7 @@ static void * unflatten_dt_node(const void *blob,
  * @dt_alloc: An allocator that provides a virtual address to memory
  * for the resulting tree
  */
-static void __unflatten_device_tree(const void *blob,
+static void __unflatten_device_tree(void *blob,
 			     struct device_node **mynodes,
 			     void * (*dt_alloc)(u64 size, u64 align))
 {
@@ -437,8 +433,6 @@ static void *kernel_tree_alloc(u64 size, u64 align)
 	return kzalloc(size, GFP_KERNEL);
 }
 
-static DEFINE_MUTEX(of_fdt_unflatten_mutex);
-
 /**
  * of_fdt_unflatten_tree - create tree of device_nodes from flat blob
  *
@@ -447,12 +441,10 @@ static DEFINE_MUTEX(of_fdt_unflatten_mutex);
  * pointers of the nodes so the normal device-tree walking functions
  * can be used.
  */
-void of_fdt_unflatten_tree(const unsigned long *blob,
+void of_fdt_unflatten_tree(unsigned long *blob,
 			struct device_node **mynodes)
 {
-	mutex_lock(&of_fdt_unflatten_mutex);
 	__unflatten_device_tree(blob, mynodes, &kernel_tree_alloc);
-	mutex_unlock(&of_fdt_unflatten_mutex);
 }
 EXPORT_SYMBOL_GPL(of_fdt_unflatten_tree);
 
@@ -588,6 +580,11 @@ void __init early_init_fdt_scan_reserved_mem(void)
 	if (!initial_boot_params)
 		return;
 
+	/* Reserve the dtb region */
+	early_init_dt_reserve_memory_arch(__pa(initial_boot_params),
+					  fdt_totalsize(initial_boot_params),
+					  0);
+
 	/* Process header /memreserve/ fields */
 	for (n = 0; ; n++) {
 		fdt_get_mem_rsv(initial_boot_params, n, &base, &size);
@@ -598,20 +595,6 @@ void __init early_init_fdt_scan_reserved_mem(void)
 
 	of_scan_flat_dt(__fdt_scan_reserved_mem, NULL);
 	fdt_init_reserved_mem();
-}
-
-/**
- * early_init_fdt_reserve_self() - reserve the memory used by the FDT blob
- */
-void __init early_init_fdt_reserve_self(void)
-{
-	if (!initial_boot_params)
-		return;
-
-	/* Reserve the dtb region */
-	early_init_dt_reserve_memory_arch(__pa(initial_boot_params),
-					  fdt_totalsize(initial_boot_params),
-					  0);
 }
 
 /**
@@ -760,16 +743,6 @@ const void * __init of_flat_dt_match_machine(const void *default_match,
 }
 
 #ifdef CONFIG_BLK_DEV_INITRD
-#ifndef __early_init_dt_declare_initrd
-static void __early_init_dt_declare_initrd(unsigned long start,
-					   unsigned long end)
-{
-	initrd_start = (unsigned long)__va(start);
-	initrd_end = (unsigned long)__va(end);
-	initrd_below_start_ok = 1;
-}
-#endif
-
 /**
  * early_init_dt_check_for_initrd - Decode initrd location from flat tree
  * @node: reference to node containing initrd location ('chosen')
@@ -792,7 +765,9 @@ static void __init early_init_dt_check_for_initrd(unsigned long node)
 		return;
 	end = of_read_number(prop, len/4);
 
-	__early_init_dt_declare_initrd(start, end);
+	initrd_start = (unsigned long)__va(start);
+	initrd_end = (unsigned long)__va(end);
+	initrd_below_start_ok = 1;
 
 	pr_debug("initrd_start=0x%llx  initrd_end=0x%llx\n",
 		 (unsigned long long)start, (unsigned long long)end);
@@ -804,13 +779,14 @@ static inline void early_init_dt_check_for_initrd(unsigned long node)
 #endif /* CONFIG_BLK_DEV_INITRD */
 
 #ifdef CONFIG_SERIAL_EARLYCON
+extern struct of_device_id __earlycon_of_table[];
 
 static int __init early_init_dt_scan_chosen_serial(void)
 {
 	int offset;
-	const char *p, *q, *options = NULL;
+	const char *p;
 	int l;
-	const struct earlycon_id *match;
+	const struct of_device_id *match = __earlycon_of_table;
 	const void *fdt = initial_boot_params;
 
 	offset = fdt_path_offset(fdt, "/chosen");
@@ -825,26 +801,23 @@ static int __init early_init_dt_scan_chosen_serial(void)
 	if (!p || !l)
 		return -ENOENT;
 
-	q = strchrnul(p, ':');
-	if (*q != '\0')
-		options = q + 1;
-	l = q - p;
-
 	/* Get the node specified by stdout-path */
-	offset = fdt_path_offset_namelen(fdt, p, l);
-	if (offset < 0) {
-		pr_warn("earlycon: stdout-path %.*s not found\n", l, p);
-		return 0;
-	}
+	offset = fdt_path_offset(fdt, p);
+	if (offset < 0)
+		return -ENODEV;
 
-	for (match = __earlycon_table; match < __earlycon_table_end; match++) {
-		if (!match->compatible[0])
+	while (match->compatible[0]) {
+		unsigned long addr;
+		if (fdt_node_check_compatible(fdt, offset, match->compatible)) {
+			match++;
 			continue;
+		}
 
-		if (fdt_node_check_compatible(fdt, offset, match->compatible))
-			continue;
+		addr = fdt_translate_address(fdt, offset);
+		if (!addr)
+			return -ENXIO;
 
-		of_setup_earlycon(match, offset, options);
+		of_setup_earlycon(addr, match->data);
 		return 0;
 	}
 	return -ENODEV;
@@ -982,16 +955,13 @@ int __init early_init_dt_scan_chosen(unsigned long node, const char *uname,
 }
 
 #ifdef CONFIG_HAVE_MEMBLOCK
-#ifndef MIN_MEMBLOCK_ADDR
-#define MIN_MEMBLOCK_ADDR	__pa(PAGE_OFFSET)
-#endif
 #ifndef MAX_MEMBLOCK_ADDR
 #define MAX_MEMBLOCK_ADDR	((phys_addr_t)~0)
 #endif
 
 void __init __weak early_init_dt_add_memory_arch(u64 base, u64 size)
 {
-	const u64 phys_offset = MIN_MEMBLOCK_ADDR;
+	const u64 phys_offset = __pa(PAGE_OFFSET);
 
 	if (!PAGE_ALIGNED(base)) {
 		if (size < PAGE_SIZE - (base & ~PAGE_MASK)) {
@@ -1047,23 +1017,12 @@ void * __init __weak early_init_dt_alloc_memory_arch(u64 size, u64 align)
 	return __va(memblock_alloc(size, align));
 }
 #else
-void __init __weak early_init_dt_add_memory_arch(u64 base, u64 size)
-{
-	WARN_ON(1);
-}
-
 int __init __weak early_init_dt_reserve_memory_arch(phys_addr_t base,
 					phys_addr_t size, bool nomap)
 {
-	pr_err("Reserved memory not supported, ignoring range %pa - %pa%s\n",
+	pr_err("Reserved memory not supported, ignoring range 0x%pa - 0x%pa%s\n",
 		  &base, &size, nomap ? " (nomap)" : "");
 	return -ENOSYS;
-}
-
-void * __init __weak early_init_dt_alloc_memory_arch(u64 size, u64 align)
-{
-	WARN_ON(1);
-	return NULL;
 }
 #endif
 

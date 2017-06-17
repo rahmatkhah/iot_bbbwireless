@@ -76,15 +76,15 @@ static inline int ti_thermal_hotspot_temperature(int t, int s, int c)
 }
 
 /* thermal zone ops */
-/* Get temperature callback function for thermal zone */
-static inline int __ti_thermal_get_temp(void *devdata, int *temp)
+/* Get temperature callback function for thermal zone*/
+static inline int __ti_thermal_get_temp(void *devdata, long *temp)
 {
 	struct thermal_zone_device *pcb_tz = NULL;
 	struct ti_thermal_data *data = devdata;
 	struct ti_bandgap *bgp;
 	const struct ti_temp_sensor *s;
 	int ret, tmp, slope, constant;
-	int pcb_temp;
+	unsigned long pcb_temp;
 
 	if (!data)
 		return 0;
@@ -120,7 +120,7 @@ static inline int __ti_thermal_get_temp(void *devdata, int *temp)
 }
 
 static inline int ti_thermal_get_temp(struct thermal_zone_device *thermal,
-				      int *temp)
+				      unsigned long *temp)
 {
 	struct ti_thermal_data *data = thermal->devdata;
 
@@ -147,8 +147,7 @@ static int ti_thermal_bind(struct thermal_zone_device *thermal,
 	return thermal_zone_bind_cooling_device(thermal, 0, cdev,
 	/* bind with min and max states defined by cpu_cooling */
 						THERMAL_NO_LIMIT,
-						THERMAL_NO_LIMIT,
-						THERMAL_WEIGHT_DEFAULT);
+						THERMAL_NO_LIMIT);
 }
 
 /* Unbind callback functions for thermal zone */
@@ -230,7 +229,7 @@ static int ti_thermal_get_trip_type(struct thermal_zone_device *thermal,
 
 /* Get trip temperature callback functions for thermal zone */
 static int ti_thermal_get_trip_temp(struct thermal_zone_device *thermal,
-				    int trip, int *temp)
+				    int trip, unsigned long *temp)
 {
 	if (!ti_thermal_is_valid_trip(trip))
 		return -EINVAL;
@@ -279,20 +278,9 @@ static int ti_thermal_get_trend(struct thermal_zone_device *thermal,
 	return 0;
 }
 
-static int __ti_thermal_set_emul_temp(void *p, int temp)
-{
-	struct ti_thermal_data *data = p;
-	struct thermal_zone_device *tz;
-
-	tz = data->ti_thermal;
-	tz->emul_temperature = temp;
-
-	return 0;
-}
-
 /* Get critical temperature callback functions for thermal zone */
 static int ti_thermal_get_crit_temp(struct thermal_zone_device *thermal,
-				    int *temp)
+				    unsigned long *temp)
 {
 	/* shutdown zone */
 	return ti_thermal_get_trip_temp(thermal, OMAP_TRIP_NUMBER - 1, temp);
@@ -342,8 +330,6 @@ static int ti_thermal_notify(struct thermal_zone_device *thermal, int temp,
 static const struct thermal_zone_of_device_ops ti_of_thermal_ops = {
 	.get_temp = __ti_thermal_get_temp,
 	.get_trend = __ti_thermal_get_trend,
-	.set_emul_temp = __ti_thermal_set_emul_temp,
-	.notify = ti_thermal_notify,
 };
 
 static struct thermal_zone_device_ops ti_thermal_ops = {

@@ -95,12 +95,12 @@ struct lov_stripe_md *lsm_alloc_plain(__u16 stripe_count, int *size)
 	oinfo_ptrs_size = sizeof(struct lov_oinfo *) * stripe_count;
 	*size = sizeof(struct lov_stripe_md) + oinfo_ptrs_size;
 
-	lsm = libcfs_kvzalloc(*size, GFP_NOFS);
+	OBD_ALLOC_LARGE(lsm, *size);
 	if (!lsm)
 		return NULL;
 
 	for (i = 0; i < stripe_count; i++) {
-		loi = kmem_cache_alloc(lov_oinfo_slab, GFP_NOFS | __GFP_ZERO);
+		OBD_SLAB_ALLOC_PTR_GFP(loi, lov_oinfo_slab, GFP_NOFS);
 		if (loi == NULL)
 			goto err;
 		lsm->lsm_oinfo[i] = loi;
@@ -110,8 +110,8 @@ struct lov_stripe_md *lsm_alloc_plain(__u16 stripe_count, int *size)
 
 err:
 	while (--i >= 0)
-		kmem_cache_free(lov_oinfo_slab, lsm->lsm_oinfo[i]);
-	kvfree(lsm);
+		OBD_SLAB_FREE(lsm->lsm_oinfo[i], lov_oinfo_slab, sizeof(*loi));
+	OBD_FREE_LARGE(lsm, *size);
 	return NULL;
 }
 
@@ -121,8 +121,10 @@ void lsm_free_plain(struct lov_stripe_md *lsm)
 	int i;
 
 	for (i = 0; i < stripe_count; i++)
-		kmem_cache_free(lov_oinfo_slab, lsm->lsm_oinfo[i]);
-	kvfree(lsm);
+		OBD_SLAB_FREE(lsm->lsm_oinfo[i], lov_oinfo_slab,
+			      sizeof(struct lov_oinfo));
+	OBD_FREE_LARGE(lsm, sizeof(struct lov_stripe_md) +
+		       stripe_count * sizeof(struct lov_oinfo *));
 }
 
 static void lsm_unpackmd_common(struct lov_stripe_md *lsm,

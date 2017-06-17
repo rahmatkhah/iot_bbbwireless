@@ -300,14 +300,6 @@ static void unmap_range(struct kvm *kvm, pgd_t *pgdp,
 		next = kvm_pgd_addr_end(addr, end);
 		if (!pgd_none(*pgd))
 			unmap_puds(kvm, pgd, addr, next);
-		/*
-		 * If we are dealing with a large range in
-		 * stage2 table, release the kvm->mmu_lock
-		 * to prevent starvation and lockup detector
-		 * warnings.
-		 */
-		if (kvm && (next != end))
-			cond_resched_lock(&kvm->mmu_lock);
 	} while (pgd++, addr = next, addr != end);
 }
 
@@ -703,8 +695,8 @@ int kvm_alloc_stage2_pgd(struct kvm *kvm)
 		 * work.  This is not used by the hardware and we have no
 		 * alignment requirement for this allocation.
 		 */
-		pgd = kmalloc(PTRS_PER_S2_PGD * sizeof(pgd_t),
-				GFP_KERNEL | __GFP_ZERO);
+		pgd = (pgd_t *)kmalloc(PTRS_PER_S2_PGD * sizeof(pgd_t),
+				       GFP_KERNEL | __GFP_ZERO);
 
 		if (!pgd) {
 			kvm_free_hwpgd(hwpgd);
@@ -746,7 +738,6 @@ int kvm_alloc_stage2_pgd(struct kvm *kvm)
  */
 static void unmap_stage2_range(struct kvm *kvm, phys_addr_t start, u64 size)
 {
-	assert_spin_locked(&kvm->mmu_lock);
 	unmap_range(kvm, kvm->arch.pgd, start, size);
 }
 
@@ -805,7 +796,6 @@ void stage2_unmap_vm(struct kvm *kvm)
 	int idx;
 
 	idx = srcu_read_lock(&kvm->srcu);
-	down_read(&current->mm->mmap_sem);
 	spin_lock(&kvm->mmu_lock);
 
 	slots = kvm_memslots(kvm);
@@ -813,7 +803,6 @@ void stage2_unmap_vm(struct kvm *kvm)
 		stage2_unmap_memslot(kvm, memslot);
 
 	spin_unlock(&kvm->mmu_lock);
-	up_read(&current->mm->mmap_sem);
 	srcu_read_unlock(&kvm->srcu, idx);
 }
 
@@ -833,10 +822,7 @@ void kvm_free_stage2_pgd(struct kvm *kvm)
 	if (kvm->arch.pgd == NULL)
 		return;
 
-	spin_lock(&kvm->mmu_lock);
 	unmap_stage2_range(kvm, 0, KVM_PHYS_SIZE);
-	spin_unlock(&kvm->mmu_lock);
-
 	kvm_free_hwpgd(kvm_get_hwpgd(kvm));
 	if (KVM_PREALLOC_LEVEL > 0)
 		kfree(kvm->arch.pgd);
@@ -1173,8 +1159,7 @@ static void stage2_wp_range(struct kvm *kvm, phys_addr_t addr, phys_addr_t end)
  */
 void kvm_mmu_wp_memory_region(struct kvm *kvm, int slot)
 {
-	struct kvm_memslots *slots = kvm_memslots(kvm);
-	struct kvm_memory_slot *memslot = id_to_memslot(slots, slot);
+	struct kvm_memory_slot *memslot = id_to_memslot(kvm->memslots, slot);
 	phys_addr_t start = memslot->base_gfn << PAGE_SHIFT;
 	phys_addr_t end = (memslot->base_gfn + memslot->npages) << PAGE_SHIFT;
 
@@ -1737,9 +1722,8 @@ out:
 }
 
 void kvm_arch_commit_memory_region(struct kvm *kvm,
-				   const struct kvm_userspace_memory_region *mem,
+				   struct kvm_userspace_memory_region *mem,
 				   const struct kvm_memory_slot *old,
-				   const struct kvm_memory_slot *new,
 				   enum kvm_mr_change change)
 {
 	/*
@@ -1753,7 +1737,7 @@ void kvm_arch_commit_memory_region(struct kvm *kvm,
 
 int kvm_arch_prepare_memory_region(struct kvm *kvm,
 				   struct kvm_memory_slot *memslot,
-				   const struct kvm_userspace_memory_region *mem,
+				   struct kvm_userspace_memory_region *mem,
 				   enum kvm_mr_change change)
 {
 	hva_t hva = mem->userspace_addr;
@@ -1773,7 +1757,6 @@ int kvm_arch_prepare_memory_region(struct kvm *kvm,
 	    (KVM_PHYS_SIZE >> PAGE_SHIFT))
 		return -EFAULT;
 
-	down_read(&current->mm->mmap_sem);
 	/*
 	 * A memory region could potentially cover multiple VMAs, and any holes
 	 * between them, so iterate over all of them to find out if we can map
@@ -1817,10 +1800,8 @@ int kvm_arch_prepare_memory_region(struct kvm *kvm,
 			pa += vm_start - vma->vm_start;
 
 			/* IO region dirty page logging not allowed */
-			if (memslot->flags & KVM_MEM_LOG_DIRTY_PAGES) {
-				ret = -EINVAL;
-				goto out;
-			}
+			if (memslot->flags & KVM_MEM_LOG_DIRTY_PAGES)
+				return -EINVAL;
 
 			ret = kvm_phys_addr_ioremap(kvm, gpa, pa,
 						    vm_end - vm_start,
@@ -1832,7 +1813,7 @@ int kvm_arch_prepare_memory_region(struct kvm *kvm,
 	} while (hva < reg_end);
 
 	if (change == KVM_MR_FLAGS_ONLY)
-		goto out;
+		return ret;
 
 	spin_lock(&kvm->mmu_lock);
 	if (ret)
@@ -1840,8 +1821,6 @@ int kvm_arch_prepare_memory_region(struct kvm *kvm,
 	else
 		stage2_flush_memslot(kvm, memslot);
 	spin_unlock(&kvm->mmu_lock);
-out:
-	up_read(&current->mm->mmap_sem);
 	return ret;
 }
 
@@ -1865,13 +1844,12 @@ int kvm_arch_create_memslot(struct kvm *kvm, struct kvm_memory_slot *slot,
 	return 0;
 }
 
-void kvm_arch_memslots_updated(struct kvm *kvm, struct kvm_memslots *slots)
+void kvm_arch_memslots_updated(struct kvm *kvm)
 {
 }
 
 void kvm_arch_flush_shadow_all(struct kvm *kvm)
 {
-	kvm_free_stage2_pgd(kvm);
 }
 
 void kvm_arch_flush_shadow_memslot(struct kvm *kvm,

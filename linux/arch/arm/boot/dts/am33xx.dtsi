@@ -42,101 +42,15 @@
 		#size-cells = <0>;
 		cpu@0 {
 			compatible = "arm,cortex-a8";
-			enable-method = "ti,am3352";
 			device_type = "cpu";
 			reg = <0>;
 
-			operating-points-v2 = <&cpu0_opp_table>;
-			ti,syscon-efuse = <&scm_conf 0x7fc 0x1fff 0>;
-			ti,syscon-rev = <&scm_conf 0x600>;
+			voltage-tolerance = <2>; /* 2 percentage */
 
 			clocks = <&dpll_mpu_ck>;
 			clock-names = "cpu";
 
 			clock-latency = <300000>; /* From omap-cpufreq driver */
-			cpu-idle-states = <&mpu_gate>;
-		};
-
-		idle-states {
-			mpu_gate: mpu_gate {
-				compatible = "arm,idle-state";
-				entry-latency-us = <40>;
-				exit-latency-us = <90>;
-				min-residency-us = <300>;
-				ti,idle-wkup-m3;
-			};
-		};
-	};
-
-	cpu0_opp_table: opp_table0 {
-		compatible = "operating-points-v2";
-
-		/*
-		 * The three following nodes are marked with opp-suspend
-		 * because the can not be enabled simultaneously on a
-		 * single SoC.
-		 */
-		opp50@300000000 {
-			opp-hz = /bits/ 64 <300000000>;
-			opp-microvolt = <950000 931000 969000>;
-			opp-supported-hw = <0x06 0x0010>;
-			opp-suspend;
-		};
-
-		opp100@275000000 {
-			opp-hz = /bits/ 64 <275000000>;
-			opp-microvolt = <1100000 1078000 1122000>;
-			opp-supported-hw = <0x01 0x00FF>;
-			opp-suspend;
-		};
-
-		opp100@300000000 {
-			opp-hz = /bits/ 64 <300000000>;
-			opp-microvolt = <1100000 1078000 1122000>;
-			opp-supported-hw = <0x06 0x0020>;
-			opp-suspend;
-		};
-
-		opp100@500000000 {
-			opp-hz = /bits/ 64 <500000000>;
-			opp-microvolt = <1100000 1078000 1122000>;
-			opp-supported-hw = <0x01 0xFFFF>;
-		};
-
-		opp100@600000000 {
-			opp-hz = /bits/ 64 <600000000>;
-			opp-microvolt = <1100000 1078000 1122000>;
-			opp-supported-hw = <0x06 0x0040>;
-		};
-
-		opp120@600000000 {
-			opp-hz = /bits/ 64 <600000000>;
-			opp-microvolt = <1200000 1176000 1224000>;
-			opp-supported-hw = <0x01 0xFFFF>;
-		};
-
-		opp120@720000000 {
-			opp-hz = /bits/ 64 <720000000>;
-			opp-microvolt = <1200000 1176000 1224000>;
-			opp-supported-hw = <0x06 0x0080>;
-		};
-
-		oppturbo@720000000 {
-			opp-hz = /bits/ 64 <720000000>;
-			opp-microvolt = <1260000 1234800 1285200>;
-			opp-supported-hw = <0x01 0xFFFF>;
-		};
-
-		oppturbo@800000000 {
-			opp-hz = /bits/ 64 <800000000>;
-			opp-microvolt = <1260000 1234800 1285200>;
-			opp-supported-hw = <0x06 0x0100>;
-		};
-
-		oppnitro@1000000000 {
-			opp-hz = /bits/ 64 <1000000000>;
-			opp-microvolt = <1325000 1298500 1351500>;
-			opp-supported-hw = <0x04 0x0200>;
 		};
 	};
 
@@ -594,8 +508,6 @@
 			interrupts = <75
 				      76>;
 			ti,hwmods = "rtc";
-			clocks = <&clkdiv32k_ick>;
-			clock-names = "int-clk";
 		};
 
 		spi0: spi@48030000 {
@@ -770,34 +682,29 @@
 				  0x48300200 0x48300200 0x80>; /* EHRPWM */
 
 			ecap0: ecap@48300100 {
-				compatible = "ti,am3352-ecap",
-					     "ti,am33xx-ecap";
+				compatible = "ti,am33xx-ecap";
 				#pwm-cells = <3>;
 				reg = <0x48300100 0x80>;
-				clocks = <&l4ls_gclk>;
-				clock-names = "fck";
 				interrupts = <31>;
 				interrupt-names = "ecap0";
+				ti,hwmods = "ecap0";
+				status = "disabled";
+			};
+
+			ehrpwm0: ehrpwm@48300200 {
+				compatible = "ti,am33xx-ehrpwm";
+				#pwm-cells = <3>;
+				reg = <0x48300200 0x80>;
+				ti,hwmods = "ehrpwm0";
 				status = "disabled";
 			};
 
 			eqep0: eqep@0x48300180 {
 				compatible = "ti,am33xx-eqep";
 				reg = <0x48300180 0x80>;
-				clocks = <&l4ls_gclk>;
-				clock-names = "fck";
 				interrupt-parent = <&intc>;
 				interrupts = <79>;
-				status = "disabled";
-			};
-
-			ehrpwm0: pwm@48300200 {
-				compatible = "ti,am3352-ehrpwm",
-					     "ti,am33xx-ehrpwm";
-				#pwm-cells = <3>;
-				reg = <0x48300200 0x80>;
-				clocks = <&ehrpwm0_tbclk>, <&l4ls_gclk>;
-				clock-names = "tbclk", "fck";
+				ti,hwmods = "eqep0";
 				status = "disabled";
 			};
 		};
@@ -814,35 +721,29 @@
 				  0x48302200 0x48302200 0x80>; /* EHRPWM */
 
 			ecap1: ecap@48302100 {
-				compatible = "ti,am3352-ecap",
-					     "ti,am33xx-ecap";
+				compatible = "ti,am33xx-ecap";
 				#pwm-cells = <3>;
 				reg = <0x48302100 0x80>;
-				clocks = <&l4ls_gclk>;
-				clock-names = "fck";
 				interrupts = <47>;
 				interrupt-names = "ecap1";
+				ti,hwmods = "ecap1";
 				status = "disabled";
 			};
 
+			ehrpwm1: ehrpwm@48302200 {
+				compatible = "ti,am33xx-ehrpwm";
+				#pwm-cells = <3>;
+				reg = <0x48302200 0x80>;
+				ti,hwmods = "ehrpwm1";
+				status = "disabled";
+			};
 
 			eqep1: eqep@0x48302180 {
 				compatible = "ti,am33xx-eqep";
 				reg = <0x48302180 0x80>;
-				clocks = <&l4ls_gclk>;
-				clock-names = "fck";
 				interrupt-parent = <&intc>;
 				interrupts = <88>;
-				status = "disabled";
-			};
-
-			ehrpwm1: pwm@48302200 {
-				compatible = "ti,am3352-ehrpwm",
-					     "ti,am33xx-ehrpwm";
-				#pwm-cells = <3>;
-				reg = <0x48302200 0x80>;
-				clocks = <&ehrpwm1_tbclk>, <&l4ls_gclk>;
-				clock-names = "tbclk", "fck";
+				ti,hwmods = "eqep1";
 				status = "disabled";
 			};
 		};
@@ -859,34 +760,29 @@
 				  0x48304200 0x48304200 0x80>; /* EHRPWM */
 
 			ecap2: ecap@48304100 {
-				compatible = "ti,am3352-ecap",
-					     "ti,am33xx-ecap";
+				compatible = "ti,am33xx-ecap";
 				#pwm-cells = <3>;
 				reg = <0x48304100 0x80>;
-				clocks = <&l4ls_gclk>;
-				clock-names = "fck";
 				interrupts = <61>;
 				interrupt-names = "ecap2";
+				ti,hwmods = "ecap2";
+				status = "disabled";
+			};
+
+			ehrpwm2: ehrpwm@48304200 {
+				compatible = "ti,am33xx-ehrpwm";
+				#pwm-cells = <3>;
+				reg = <0x48304200 0x80>;
+				ti,hwmods = "ehrpwm2";
 				status = "disabled";
 			};
 
 			eqep2: eqep@0x48304180 {
 				compatible = "ti,am33xx-eqep";
 				reg = <0x48304180 0x80>;
-				clocks = <&l4ls_gclk>;
-				clock-names = "fck";
 				interrupt-parent = <&intc>;
 				interrupts = <89>;
-				status = "disabled";
-			};
-
-			ehrpwm2: pwm@48304200 {
-				compatible = "ti,am3352-ehrpwm",
-					     "ti,am33xx-ehrpwm";
-				#pwm-cells = <3>;
-				reg = <0x48304200 0x80>;
-				clocks = <&ehrpwm2_tbclk>, <&l4ls_gclk>;
-				clock-names = "tbclk", "fck";
+				ti,hwmods = "eqep2";
 				status = "disabled";
 			};
 		};
@@ -900,6 +796,7 @@
 			ale_entries = <1024>;
 			bd_ram_size = <0x2000>;
 			no_bd_ram = <0>;
+			rx_descs = <64>;
 			mac_control = <0x20>;
 			slaves = <2>;
 			active_slave = <0>;
@@ -922,7 +819,7 @@
 			status = "disabled";
 
 			davinci_mdio: mdio@4a101000 {
-				compatible = "ti,cpsw-mdio";
+				compatible = "ti,davinci_mdio";
 				#address-cells = <1>;
 				#size-cells = <0>;
 				ti,hwmods = "davinci_mdio";
@@ -950,18 +847,55 @@
 
 		ocmcram: ocmcram@40300000 {
 			compatible = "mmio-sram";
-			reg = <0x40300000 0x2000>; /* 8k */
+			reg = <0x40300000 0x10000>; /* 64k */
 			map-exec;
 		};
 
-		ocmcram_nocache: ocmcram_nocache@40302000 {
-			compatible = "mmio-sram";
-			reg = <0x40302000 0xe000>; /* 64k - 8k */
-		};
-
 		pruss: pruss@4a300000 {
+			compatible = "ti,am3352-pruss";
 			ti,hwmods = "pruss";
-			status = "disabled";
+			reg = <0x4a300000 0x2000>,
+			      <0x4a302000 0x2000>,
+			      <0x4a310000 0x3000>,
+			      <0x4a320000 0x2000>,
+			      <0x4a326000 0x2000>,
+			      <0x4a32e000 0x31c>,
+			      <0x4a332000 0x58>;
+			reg-names = "dram0", "dram1", "shrdram2", "intc", "cfg",
+				    "iep", "mii_rt";
+			interrupts = <20 21 22 23 24 25 26 27>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges;
+
+			pru0: pru0@4a334000 {
+				compatible = "ti,am3352-pru-rproc";
+				reg = <0x4a334000 0x2000>,
+				      <0x4a322000 0x400>,
+				      <0x4a322400 0x100>;
+				reg-names = "iram", "control", "debug";
+				mboxes = <&mailbox &mbox_pru0>;
+			};
+
+			pru1: pru1@4a338000 {
+				compatible = "ti,am3352-pru-rproc";
+				reg = <0x4a338000 0x2000>,
+				      <0x4a324000 0x400>,
+				      <0x4a324400 0x100>;
+				reg-names = "iram", "control", "debug";
+				mboxes = <&mailbox &mbox_pru1>;
+			};
+
+			pruss_mdio: mdio@4a332400 {
+				compatible = "ti,davinci_mdio";
+				reg = <0x4a332400 0x90>;
+				clocks = <&dpll_core_m4_ck>;
+				clock-names = "fck";
+				bus_freq = <1000000>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
 		};
 
 		elm: elm@48080000 {
@@ -1010,10 +944,10 @@
 			gpmc,num-waitpins = <2>;
 			#address-cells = <2>;
 			#size-cells = <1>;
-			interrupt-controller;
-			#interrupt-cells = <2>;
 			gpio-controller;
 			#gpio-cells = <2>;
+			interrupt-controller;
+			#interrupt-cells = <2>;
 			status = "disabled";
 		};
 
@@ -1077,13 +1011,11 @@
 		 * such as AM3358 and AM3357. The status should be overwritten
 		 * as "OK" at the corresponding board.dts.
 		 */
-		sgx: sgx@56000000 {
+		sgx: sgx@0x56000000 {
 			compatible = "ti,am3352-sgx530", "img,sgx530";
 			ti,hwmods = "gfx";
-			reg = <0x56000000 0x10000>;
+			reg = <0x56000000 0x1000000>;
 			interrupts = <37>;
-			clocks = <&gfx_fck_div_ck>;
-			clock-names = "fclk";
 			status = "disabled";
 		};
 	};

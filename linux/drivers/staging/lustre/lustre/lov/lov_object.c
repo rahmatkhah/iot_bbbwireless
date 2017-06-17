@@ -42,6 +42,7 @@
 #define DEBUG_SUBSYSTEM S_LOV
 
 #include "lov_cl_internal.h"
+#include "../include/lclient.h"
 
 /** \addtogroup lov
  *  @{
@@ -217,8 +218,7 @@ static int lov_init_raid0(const struct lu_env *env,
 	r0->lo_nr  = lsm->lsm_stripe_count;
 	LASSERT(r0->lo_nr <= lov_targets_nr(dev));
 
-	r0->lo_sub = libcfs_kvzalloc(r0->lo_nr * sizeof(r0->lo_sub[0]),
-				     GFP_NOFS);
+	OBD_ALLOC_LARGE(r0->lo_sub, r0->lo_nr * sizeof(r0->lo_sub[0]));
 	if (r0->lo_sub != NULL) {
 		result = 0;
 		subconf->coc_inode = conf->coc_inode;
@@ -375,7 +375,7 @@ static void lov_fini_raid0(const struct lu_env *env, struct lov_object *lov,
 	struct lov_layout_raid0 *r0 = &state->raid0;
 
 	if (r0->lo_sub != NULL) {
-		kvfree(r0->lo_sub);
+		OBD_FREE_LARGE(r0->lo_sub, r0->lo_nr * sizeof(r0->lo_sub[0]));
 		r0->lo_sub = NULL;
 	}
 
@@ -808,7 +808,7 @@ static void lov_object_free(const struct lu_env *env, struct lu_object *obj)
 
 	LOV_2DISPATCH_VOID(lov, llo_fini, env, lov, &lov->u);
 	lu_object_fini(obj);
-	kmem_cache_free(lov_object_kmem, lov);
+	OBD_SLAB_FREE_PTR(lov, lov_object_kmem);
 }
 
 static int lov_object_print(const struct lu_env *env, void *cookie,
@@ -891,7 +891,7 @@ struct lu_object *lov_object_alloc(const struct lu_env *env,
 	struct lov_object *lov;
 	struct lu_object  *obj;
 
-	lov = kmem_cache_alloc(lov_object_kmem, GFP_NOFS | __GFP_ZERO);
+	OBD_SLAB_ALLOC_PTR_GFP(lov, lov_object_kmem, GFP_NOFS);
 	if (lov != NULL) {
 		obj = lov2lu(lov);
 		lu_object_init(obj, NULL, dev);
@@ -908,7 +908,7 @@ struct lu_object *lov_object_alloc(const struct lu_env *env,
 	return obj;
 }
 
-static struct lov_stripe_md *lov_lsm_addref(struct lov_object *lov)
+struct lov_stripe_md *lov_lsm_addref(struct lov_object *lov)
 {
 	struct lov_stripe_md *lsm = NULL;
 
@@ -921,6 +921,17 @@ static struct lov_stripe_md *lov_lsm_addref(struct lov_object *lov)
 	}
 	lov_conf_thaw(lov);
 	return lsm;
+}
+
+void lov_lsm_decref(struct lov_object *lov, struct lov_stripe_md *lsm)
+{
+	if (lsm == NULL)
+		return;
+
+	CDEBUG(D_INODE, "lsm %p decref %d by %p.\n",
+		lsm, atomic_read(&lsm->lsm_refc), current);
+
+	lov_free_memmd(&lsm);
 }
 
 struct lov_stripe_md *lov_lsm_get(struct cl_object *clobj)

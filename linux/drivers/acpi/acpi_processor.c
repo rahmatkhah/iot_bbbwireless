@@ -164,31 +164,13 @@ static int acpi_processor_errata(void)
    -------------------------------------------------------------------------- */
 
 #ifdef CONFIG_ACPI_HOTPLUG_CPU
-int __weak acpi_map_cpu(acpi_handle handle,
-		phys_cpuid_t physid, int *pcpu)
-{
-	return -ENODEV;
-}
-
-int __weak acpi_unmap_cpu(int cpu)
-{
-	return -ENODEV;
-}
-
-int __weak arch_register_cpu(int cpu)
-{
-	return -ENODEV;
-}
-
-void __weak arch_unregister_cpu(int cpu) {}
-
 static int acpi_processor_hotadd_init(struct acpi_processor *pr)
 {
 	unsigned long long sta;
 	acpi_status status;
 	int ret;
 
-	if (invalid_phys_cpuid(pr->phys_id))
+	if (pr->phys_id == PHYS_CPUID_INVALID)
 		return -ENODEV;
 
 	status = acpi_evaluate_integer(pr->handle, "_STA", NULL, &sta);
@@ -233,7 +215,8 @@ static int acpi_processor_get_info(struct acpi_device *device)
 	union acpi_object object = { 0 };
 	struct acpi_buffer buffer = { sizeof(union acpi_object), &object };
 	struct acpi_processor *pr = acpi_driver_data(device);
-	int device_declaration = 0;
+	phys_cpuid_t phys_id;
+	int cpu_index, device_declaration = 0;
 	acpi_status status = AE_OK;
 	static int cpu0_initialized;
 	unsigned long long value;
@@ -280,28 +263,29 @@ static int acpi_processor_get_info(struct acpi_device *device)
 		pr->acpi_id = value;
 	}
 
-	pr->phys_id = acpi_get_phys_id(pr->handle, device_declaration,
-					pr->acpi_id);
-	if (invalid_phys_cpuid(pr->phys_id))
+	phys_id = acpi_get_phys_id(pr->handle, device_declaration, pr->acpi_id);
+	if (phys_id == PHYS_CPUID_INVALID)
 		acpi_handle_debug(pr->handle, "failed to get CPU physical ID.\n");
+	pr->phys_id = phys_id;
 
-	pr->id = acpi_map_cpuid(pr->phys_id, pr->acpi_id);
+	cpu_index = acpi_map_cpuid(pr->phys_id, pr->acpi_id);
 	if (!cpu0_initialized && !acpi_has_cpu_in_madt()) {
 		cpu0_initialized = 1;
 		/*
 		 * Handle UP system running SMP kernel, with no CPU
 		 * entry in MADT
 		 */
-		if (invalid_logical_cpuid(pr->id) && (num_online_cpus() == 1))
-			pr->id = 0;
+		if ((cpu_index == -1) && (num_online_cpus() == 1))
+			cpu_index = 0;
 	}
+	pr->id = cpu_index;
 
 	/*
 	 *  Extra Processor objects may be enumerated on MP systems with
 	 *  less than the max # of CPUs. They should be ignored _iff
 	 *  they are physically not present.
 	 */
-	if (invalid_logical_cpuid(pr->id)) {
+	if (pr->id == -1) {
 		int ret = acpi_processor_hotadd_init(pr);
 		if (ret)
 			return ret;
@@ -555,7 +539,7 @@ static const struct acpi_device_id processor_device_ids[] = {
 	{ }
 };
 
-static struct acpi_scan_handler processor_handler = {
+static struct acpi_scan_handler __refdata processor_handler = {
 	.ids = processor_device_ids,
 	.attach = acpi_processor_add,
 #ifdef CONFIG_ACPI_HOTPLUG_CPU

@@ -13,7 +13,6 @@
 #include <linux/slab.h>
 #include <linux/rwsem.h>
 #include <linux/acpi.h>
-#include <linux/dma-mapping.h>
 
 #include "internal.h"
 
@@ -168,7 +167,6 @@ int acpi_bind_one(struct device *dev, struct acpi_device *acpi_dev)
 	struct list_head *physnode_list;
 	unsigned int node_id;
 	int retval = -EINVAL;
-	enum dev_dma_attr attr;
 
 	if (has_acpi_companion(dev)) {
 		if (acpi_dev) {
@@ -224,11 +222,6 @@ int acpi_bind_one(struct device *dev, struct acpi_device *acpi_dev)
 
 	if (!has_acpi_companion(dev))
 		ACPI_COMPANION_SET(dev, acpi_dev);
-
-	attr = acpi_get_dma_attr(acpi_dev);
-	if (attr != DEV_DMA_NOT_SUPPORTED)
-		arch_setup_dma_ops(dev, 0, 0, NULL,
-				   attr == DEV_DMA_COHERENT);
 
 	acpi_physnode_link_name(physical_node_name, node_id);
 	retval = sysfs_create_link(&acpi_dev->dev.kobj, &dev->kobj,
@@ -353,12 +346,13 @@ static int acpi_platform_notify_remove(struct device *dev)
 	return 0;
 }
 
-void __init init_acpi_device_notify(void)
+int __init init_acpi_device_notify(void)
 {
 	if (platform_notify || platform_notify_remove) {
 		printk(KERN_ERR PREFIX "Can't use platform_notify\n");
-		return;
+		return 0;
 	}
 	platform_notify = acpi_platform_notify;
 	platform_notify_remove = acpi_platform_notify_remove;
+	return 0;
 }

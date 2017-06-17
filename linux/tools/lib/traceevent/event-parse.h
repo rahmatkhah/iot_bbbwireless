@@ -191,7 +191,6 @@ struct format_field {
 	struct event_format	*event;
 	char			*type;
 	char			*name;
-	char			*alias;
 	int			offset;
 	int			size;
 	unsigned int		arraylen;
@@ -294,7 +293,6 @@ enum print_arg_type {
 	PRINT_OP,
 	PRINT_FUNC,
 	PRINT_BITMASK,
-	PRINT_DYNAMIC_ARRAY_LEN,
 };
 
 struct print_arg {
@@ -454,10 +452,6 @@ struct cmdline_list;
 struct func_map;
 struct func_list;
 struct event_handler;
-struct func_resolver;
-
-typedef char *(pevent_func_resolver_t)(void *priv,
-				       unsigned long long *addrp, char **modp);
 
 struct pevent {
 	int ref_count;
@@ -486,7 +480,6 @@ struct pevent {
 	int cmdline_count;
 
 	struct func_map *func_map;
-	struct func_resolver *func_resolver;
 	struct func_list *funclist;
 	unsigned int func_count;
 
@@ -617,9 +610,6 @@ enum trace_flag_type {
 	TRACE_FLAG_SOFTIRQ		= 0x10,
 };
 
-int pevent_set_function_resolver(struct pevent *pevent,
-				 pevent_func_resolver_t *func, void *priv);
-void pevent_reset_function_resolver(struct pevent *pevent);
 int pevent_register_comm(struct pevent *pevent, const char *comm, int pid);
 int pevent_register_trace_clock(struct pevent *pevent, const char *trace_clock);
 int pevent_register_function(struct pevent *pevent, char *name,

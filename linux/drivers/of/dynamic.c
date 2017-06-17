@@ -11,7 +11,6 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/proc_fs.h>
-#include <linux/rhashtable.h>
 
 #include "of_private.h"
 
@@ -42,16 +41,9 @@ void of_node_put(struct device_node *node)
 }
 EXPORT_SYMBOL(of_node_put);
 
-void __of_detach_node_post(struct device_node *np)
+void __of_detach_node_sysfs(struct device_node *np)
 {
 	struct property *pp;
-	int rc;
-
-	if (of_phandle_ht_available()) {
-		rc = of_phandle_ht_remove(np);
-		WARN(rc, "remove from phandle hash fail @%s\n",
-				of_node_full_name(np));
-	}
 
 	if (!IS_ENABLED(CONFIG_SYSFS))
 		return;
@@ -63,7 +55,7 @@ void __of_detach_node_post(struct device_node *np)
 	/* only remove properties if on sysfs */
 	if (of_node_is_attached(np)) {
 		for_each_property_of_node(np, pp)
-			__of_sysfs_remove_bin_file(np, pp);
+			sysfs_remove_bin_file(&np->kobj, &pp->attr);
 		kobject_del(&np->kobj);
 	}
 
@@ -259,7 +251,7 @@ int of_attach_node(struct device_node *np)
 	__of_attach_node(np);
 	raw_spin_unlock_irqrestore(&devtree_lock, flags);
 
-	__of_attach_node_post(np);
+	__of_attach_node_sysfs(np);
 	mutex_unlock(&of_mutex);
 
 	of_reconfig_notify(OF_RECONFIG_ATTACH_NODE, &rd);
@@ -312,7 +304,7 @@ int of_detach_node(struct device_node *np)
 	__of_detach_node(np);
 	raw_spin_unlock_irqrestore(&devtree_lock, flags);
 
-	__of_detach_node_post(np);
+	__of_detach_node_sysfs(np);
 	mutex_unlock(&of_mutex);
 
 	of_reconfig_notify(OF_RECONFIG_DETACH_NODE, &rd);
@@ -631,10 +623,10 @@ static int __of_changeset_entry_apply(struct of_changeset_entry *ce)
 
 	switch (ce->action) {
 	case OF_RECONFIG_ATTACH_NODE:
-		__of_attach_node_post(ce->np);
+		__of_attach_node_sysfs(ce->np);
 		break;
 	case OF_RECONFIG_DETACH_NODE:
-		__of_detach_node_post(ce->np);
+		__of_detach_node_sysfs(ce->np);
 		break;
 	case OF_RECONFIG_ADD_PROPERTY:
 		/* ignore duplicate names */
@@ -671,7 +663,6 @@ void of_changeset_init(struct of_changeset *ocs)
 	memset(ocs, 0, sizeof(*ocs));
 	INIT_LIST_HEAD(&ocs->entries);
 }
-EXPORT_SYMBOL_GPL(of_changeset_init);
 
 /**
  * of_changeset_destroy - Destroy a changeset
@@ -688,9 +679,20 @@ void of_changeset_destroy(struct of_changeset *ocs)
 	list_for_each_entry_safe_reverse(ce, cen, &ocs->entries, node)
 		__of_changeset_entry_destroy(ce);
 }
-EXPORT_SYMBOL_GPL(of_changeset_destroy);
 
-int __of_changeset_apply(struct of_changeset *ocs)
+/**
+ * of_changeset_apply - Applies a changeset
+ *
+ * @ocs:	changeset pointer
+ *
+ * Applies a changeset to the live tree.
+ * Any side-effects of live tree state changes are applied here on
+ * sucess, like creation/destruction of devices and side-effects
+ * like creation of sysfs properties and directories.
+ * Returns 0 on success, a negative error value in case of an error.
+ * On error the partially applied effects are reverted.
+ */
+int of_changeset_apply(struct of_changeset *ocs)
 {
 	struct of_changeset_entry *ce;
 	int ret;
@@ -719,30 +721,17 @@ int __of_changeset_apply(struct of_changeset *ocs)
 }
 
 /**
- * of_changeset_apply - Applies a changeset
+ * of_changeset_revert - Reverts an applied changeset
  *
  * @ocs:	changeset pointer
  *
- * Applies a changeset to the live tree.
- * Any side-effects of live tree state changes are applied here on
- * success, like creation/destruction of devices and side-effects
- * like creation of sysfs properties and directories.
+ * Reverts a changeset returning the state of the tree to what it
+ * was before the application.
+ * Any side-effects like creation/destruction of devices and
+ * removal of sysfs properties and directories are applied.
  * Returns 0 on success, a negative error value in case of an error.
- * On error the partially applied effects are reverted.
  */
-int of_changeset_apply(struct of_changeset *ocs)
-{
-	int ret;
-
-	mutex_lock(&of_mutex);
-	ret = __of_changeset_apply(ocs);
-	mutex_unlock(&of_mutex);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(of_changeset_apply);
-
-int __of_changeset_revert(struct of_changeset *ocs)
+int of_changeset_revert(struct of_changeset *ocs)
 {
 	struct of_changeset_entry *ce;
 	int ret;
@@ -768,29 +757,6 @@ int __of_changeset_revert(struct of_changeset *ocs)
 
 	return 0;
 }
-
-/**
- * of_changeset_revert - Reverts an applied changeset
- *
- * @ocs:	changeset pointer
- *
- * Reverts a changeset returning the state of the tree to what it
- * was before the application.
- * Any side-effects like creation/destruction of devices and
- * removal of sysfs properties and directories are applied.
- * Returns 0 on success, a negative error value in case of an error.
- */
-int of_changeset_revert(struct of_changeset *ocs)
-{
-	int ret;
-
-	mutex_lock(&of_mutex);
-	ret = __of_changeset_revert(ocs);
-	mutex_unlock(&of_mutex);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(of_changeset_revert);
 
 /**
  * of_changeset_action - Perform a changeset action
@@ -830,7 +796,6 @@ int of_changeset_action(struct of_changeset *ocs, unsigned long action,
 	list_add_tail(&ce->node, &ocs->entries);
 	return 0;
 }
-EXPORT_SYMBOL_GPL(of_changeset_action);
 
 /* changeset helpers */
 
@@ -906,7 +871,9 @@ int of_changeset_add_property_copy(struct of_changeset *ocs,
 	struct property *prop;
 	char *new_name;
 	void *new_value;
-	int ret = -ENOMEM;
+	int ret;
+
+	ret = -ENOMEM;
 
 	prop = kzalloc(sizeof(*prop), GFP_KERNEL);
 	if (!prop)
@@ -1016,14 +983,13 @@ int of_changeset_add_property_string_list(struct of_changeset *ocs,
 		struct device_node *np, const char *name, const char **strs,
 		int count)
 {
-	int total = 0, i, ret;
+	int total, length, i, ret;
 	char *value, *s;
 
+	total = 0;
 	for (i = 0; i < count; i++) {
-		/* check if  it's NULL */
-		if (!strs[i])
-			return -EINVAL;
-		total += strlen(strs[i]) + 1;
+		length = strlen(strs[i]);
+		total += length + 1;
 	}
 
 	value = kmalloc(total, GFP_KERNEL);
@@ -1031,9 +997,9 @@ int of_changeset_add_property_string_list(struct of_changeset *ocs,
 		return -ENOMEM;
 
 	for (i = 0, s = value; i < count; i++) {
-		/* no need to check for NULL, check above */
-		strcpy(s, strs[i]);
-		s += strlen(strs[i]) + 1;
+		length = strlen(strs[i]);
+		memcpy(s, strs[i], length + 1);
+		s += length + 1;
 	}
 
 	ret = of_changeset_add_property_copy(ocs, np, name, value, total);

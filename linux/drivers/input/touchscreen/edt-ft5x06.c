@@ -86,9 +86,8 @@ struct edt_reg_addr {
 struct edt_ft5x06_ts_data {
 	struct i2c_client *client;
 	struct input_dev *input;
-	struct touchscreen_properties prop;
-	u16 num_x;
-	u16 num_y;
+	u32 num_x;
+	u32 num_y;
 
 	struct gpio_desc *reset_gpio;
 	struct gpio_desc *wake_gpio;
@@ -111,6 +110,9 @@ struct edt_ft5x06_ts_data {
 
 	struct edt_reg_addr reg_addr;
 	enum edt_ver version;
+	bool invert_x;
+	bool invert_y;
+	bool swap_xy;
 };
 
 struct edt_i2c_chip_data {
@@ -247,8 +249,19 @@ static irqreturn_t edt_ft5x06_ts_isr(int irq, void *dev_id)
 		if (!down)
 			continue;
 
-		touchscreen_report_pos(tsdata->input, &tsdata->prop, x, y,
-				       true);
+		if (tsdata->invert_x)
+			x = tsdata->num_x - x;
+
+		if (tsdata->invert_y)
+			y = tsdata->num_y - y;
+
+		if (tsdata->swap_xy) {
+			input_report_abs(tsdata->input, ABS_MT_POSITION_X, y);
+			input_report_abs(tsdata->input, ABS_MT_POSITION_Y, x);
+		} else {
+			input_report_abs(tsdata->input, ABS_MT_POSITION_X, x);
+			input_report_abs(tsdata->input, ABS_MT_POSITION_Y, y);
+		}
 	}
 
 	input_mt_report_pointer_emulation(tsdata->input, true);
@@ -725,8 +738,8 @@ edt_ft5x06_ts_prepare_debugfs(struct edt_ft5x06_ts_data *tsdata,
 	if (!tsdata->debug_dir)
 		return;
 
-	debugfs_create_u16("num_x", S_IRUSR, tsdata->debug_dir, &tsdata->num_x);
-	debugfs_create_u16("num_y", S_IRUSR, tsdata->debug_dir, &tsdata->num_y);
+	debugfs_create_u32("num_x", S_IRUSR, tsdata->debug_dir, &tsdata->num_x);
+	debugfs_create_u32("num_y", S_IRUSR, tsdata->debug_dir, &tsdata->num_y);
 
 	debugfs_create_file("mode", S_IRUSR | S_IWUSR,
 			    tsdata->debug_dir, tsdata, &debugfs_mode_fops);
@@ -839,6 +852,20 @@ static void edt_ft5x06_ts_get_defaults(struct device *dev,
 		edt_ft5x06_register_write(tsdata, reg_addr->reg_offset, val);
 		tsdata->offset = val;
 	}
+
+	if (device_property_read_u32(dev, "touchscreen-size-x",
+				     &tsdata->num_x) ||
+	    device_property_read_u32(dev, "touchscreen-size-y",
+				     &tsdata->num_x)) {
+		dev_err(dev, "touchscreen-size-x and/or -y missing\n");
+	}
+
+	tsdata->invert_x = device_property_read_bool(dev,
+						     "touchscreen-inverted-x");
+	tsdata->invert_y = device_property_read_bool(dev,
+						     "touchscreen-inverted-y");
+	tsdata->swap_xy = device_property_read_bool(dev,
+						    "touchscreen-swapped-x-y");
 }
 
 static void
@@ -968,12 +995,19 @@ static int edt_ft5x06_ts_probe(struct i2c_client *client,
 	input->id.bustype = BUS_I2C;
 	input->dev.parent = &client->dev;
 
-	input_set_abs_params(input, ABS_MT_POSITION_X,
-			     0, tsdata->num_x * 64 - 1, 0, 0);
-	input_set_abs_params(input, ABS_MT_POSITION_Y,
-			     0, tsdata->num_y * 64 - 1, 0, 0);
+	if (tsdata->swap_xy) {
+		input_set_abs_params(input, ABS_MT_POSITION_X,
+				     0, tsdata->num_y * 64 - 1, 0, 0);
+		input_set_abs_params(input, ABS_MT_POSITION_Y,
+				     0, tsdata->num_x * 64 - 1, 0, 0);
+	} else {
+		input_set_abs_params(input, ABS_MT_POSITION_X,
+				     0, tsdata->num_x * 64 - 1, 0, 0);
+		input_set_abs_params(input, ABS_MT_POSITION_Y,
+				     0, tsdata->num_y * 64 - 1, 0, 0);
+	}
 
-	touchscreen_parse_properties(input, true, &tsdata->prop);
+	touchscreen_parse_properties(input, true);
 
 	error = input_mt_init_slots(input, tsdata->max_support_points,
 				INPUT_MT_DIRECT);
@@ -1063,15 +1097,9 @@ static const struct edt_i2c_chip_data edt_ft5506_data = {
 	.max_support_points = 10,
 };
 
-static const struct edt_i2c_chip_data edt_ft6236_data = {
-	.max_support_points = 2,
-};
-
 static const struct i2c_device_id edt_ft5x06_ts_id[] = {
 	{ .name = "edt-ft5x06", .driver_data = (long)&edt_ft5x06_data },
 	{ .name = "edt-ft5506", .driver_data = (long)&edt_ft5506_data },
-	/* Note no edt- prefix for compatibility with the ft6236.c driver */
-	{ .name = "ft6236", .driver_data = (long)&edt_ft6236_data },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(i2c, edt_ft5x06_ts_id);
@@ -1082,8 +1110,6 @@ static const struct of_device_id edt_ft5x06_of_match[] = {
 	{ .compatible = "edt,edt-ft5306", .data = &edt_ft5x06_data },
 	{ .compatible = "edt,edt-ft5406", .data = &edt_ft5x06_data },
 	{ .compatible = "edt,edt-ft5506", .data = &edt_ft5506_data },
-	/* Note focaltech vendor prefix for compatibility with ft6236.c */
-	{ .compatible = "focaltech,ft6236", .data = &edt_ft6236_data },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, edt_ft5x06_of_match);
@@ -1102,10 +1128,6 @@ static struct i2c_driver edt_ft5x06_ts_driver = {
 
 module_i2c_driver(edt_ft5x06_ts_driver);
 
-MODULE_ALIAS("i2c:edt-ft5206");
-MODULE_ALIAS("i2c:edt-ft5306");
-MODULE_ALIAS("i2c:edt-ft5406");
-MODULE_ALIAS("i2c:edt-ft5506");
 MODULE_AUTHOR("Simon Budig <simon.budig@kernelconcepts.de>");
 MODULE_DESCRIPTION("EDT FT5x06 I2C Touchscreen Driver");
 MODULE_LICENSE("GPL");

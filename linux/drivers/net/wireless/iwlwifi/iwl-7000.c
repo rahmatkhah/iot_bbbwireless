@@ -69,19 +69,15 @@
 #include "iwl-agn-hw.h"
 
 /* Highest firmware API version supported */
-#define IWL7260_UCODE_API_MAX	17
-#define IWL7265_UCODE_API_MAX	19
-#define IWL7265D_UCODE_API_MAX	19
+#define IWL7260_UCODE_API_MAX	13
 
 /* Oldest version we won't warn about */
-#define IWL7260_UCODE_API_OK	13
-#define IWL7265_UCODE_API_OK	13
-#define IWL7265D_UCODE_API_OK	13
+#define IWL7260_UCODE_API_OK	12
+#define IWL3165_UCODE_API_OK	13
 
 /* Lowest firmware API version supported */
-#define IWL7260_UCODE_API_MIN	13
-#define IWL7265_UCODE_API_MIN	13
-#define IWL7265D_UCODE_API_MIN	13
+#define IWL7260_UCODE_API_MIN	10
+#define IWL3165_UCODE_API_MIN	13
 
 /* NVM versions */
 #define IWL7260_NVM_VERSION		0x0a1d
@@ -117,7 +113,7 @@
 
 static const struct iwl_base_params iwl7000_base_params = {
 	.eeprom_size = OTP_LOW_IMAGE_SIZE_FAMILY_7000,
-	.num_of_queues = 31,
+	.num_of_queues = IWLAGN_NUM_QUEUES,
 	.pll_cfg_val = 0,
 	.shadow_ram_support = true,
 	.led_compensation = 57,
@@ -128,34 +124,15 @@ static const struct iwl_base_params iwl7000_base_params = {
 	.apmg_wake_up_wa = true,
 };
 
-static const struct iwl_tt_params iwl7000_high_temp_tt_params = {
-	.ct_kill_entry = 118,
-	.ct_kill_exit = 96,
-	.ct_kill_duration = 5,
-	.dynamic_smps_entry = 114,
-	.dynamic_smps_exit = 110,
-	.tx_protection_entry = 114,
-	.tx_protection_exit = 108,
-	.tx_backoff = {
-		{.temperature = 112, .backoff = 300},
-		{.temperature = 113, .backoff = 800},
-		{.temperature = 114, .backoff = 1500},
-		{.temperature = 115, .backoff = 3000},
-		{.temperature = 116, .backoff = 5000},
-		{.temperature = 117, .backoff = 10000},
-	},
-	.support_ct_kill = true,
-	.support_dynamic_smps = true,
-	.support_tx_protection = true,
-	.support_tx_backoff = true,
-};
-
 static const struct iwl_ht_params iwl7000_ht_params = {
 	.stbc = true,
 	.ht40_bands = BIT(IEEE80211_BAND_2GHZ) | BIT(IEEE80211_BAND_5GHZ),
 };
 
-#define IWL_DEVICE_7000_COMMON					\
+#define IWL_DEVICE_7000						\
+	.ucode_api_max = IWL7260_UCODE_API_MAX,			\
+	.ucode_api_ok = IWL7260_UCODE_API_OK,			\
+	.ucode_api_min = IWL7260_UCODE_API_MIN,			\
 	.device_family = IWL_DEVICE_FAMILY_7000,		\
 	.max_inst_size = IWL60_RTC_INST_SIZE,			\
 	.max_data_size = IWL60_RTC_DATA_SIZE,			\
@@ -165,24 +142,6 @@ static const struct iwl_ht_params iwl7000_ht_params = {
 	.non_shared_ant = ANT_A,				\
 	.max_ht_ampdu_exponent = IEEE80211_HT_MAX_AMPDU_64K,	\
 	.dccm_offset = IWL7000_DCCM_OFFSET
-
-#define IWL_DEVICE_7000						\
-	IWL_DEVICE_7000_COMMON,					\
-	.ucode_api_max = IWL7260_UCODE_API_MAX,			\
-	.ucode_api_ok = IWL7260_UCODE_API_OK,			\
-	.ucode_api_min = IWL7260_UCODE_API_MIN
-
-#define IWL_DEVICE_7005						\
-	IWL_DEVICE_7000_COMMON,					\
-	.ucode_api_max = IWL7265_UCODE_API_MAX,			\
-	.ucode_api_ok = IWL7265_UCODE_API_OK,			\
-	.ucode_api_min = IWL7265_UCODE_API_MIN
-
-#define IWL_DEVICE_7005D					\
-	IWL_DEVICE_7000_COMMON,					\
-	.ucode_api_max = IWL7265D_UCODE_API_MAX,		\
-	.ucode_api_ok = IWL7265D_UCODE_API_OK,			\
-	.ucode_api_min = IWL7265D_UCODE_API_MIN
 
 const struct iwl_cfg iwl7260_2ac_cfg = {
 	.name = "Intel(R) Dual Band Wireless AC 7260",
@@ -207,7 +166,6 @@ const struct iwl_cfg iwl7260_2ac_cfg_high_temp = {
 	.host_interrupt_operation_mode = true,
 	.lp_xtal_workaround = true,
 	.dccm_len = IWL7260_DCCM_LEN,
-	.thermal_params = &iwl7000_high_temp_tt_params,
 };
 
 const struct iwl_cfg iwl7260_2n_cfg = {
@@ -287,7 +245,12 @@ static const struct iwl_ht_params iwl7265_ht_params = {
 const struct iwl_cfg iwl3165_2ac_cfg = {
 	.name = "Intel(R) Dual Band Wireless AC 3165",
 	.fw_name_pre = IWL7265D_FW_PRE,
-	IWL_DEVICE_7005D,
+	IWL_DEVICE_7000,
+	/* sparse doens't like the re-assignment but it is safe */
+#ifndef __CHECKER__
+	.ucode_api_ok = IWL3165_UCODE_API_OK,
+	.ucode_api_min = IWL3165_UCODE_API_MIN,
+#endif
 	.ht_params = &iwl7000_ht_params,
 	.nvm_ver = IWL3165_NVM_VERSION,
 	.nvm_calib_ver = IWL3165_TX_POWER_VERSION,
@@ -298,7 +261,7 @@ const struct iwl_cfg iwl3165_2ac_cfg = {
 const struct iwl_cfg iwl7265_2ac_cfg = {
 	.name = "Intel(R) Dual Band Wireless AC 7265",
 	.fw_name_pre = IWL7265_FW_PRE,
-	IWL_DEVICE_7005,
+	IWL_DEVICE_7000,
 	.ht_params = &iwl7265_ht_params,
 	.nvm_ver = IWL7265_NVM_VERSION,
 	.nvm_calib_ver = IWL7265_TX_POWER_VERSION,
@@ -309,7 +272,7 @@ const struct iwl_cfg iwl7265_2ac_cfg = {
 const struct iwl_cfg iwl7265_2n_cfg = {
 	.name = "Intel(R) Dual Band Wireless N 7265",
 	.fw_name_pre = IWL7265_FW_PRE,
-	IWL_DEVICE_7005,
+	IWL_DEVICE_7000,
 	.ht_params = &iwl7265_ht_params,
 	.nvm_ver = IWL7265_NVM_VERSION,
 	.nvm_calib_ver = IWL7265_TX_POWER_VERSION,
@@ -320,7 +283,7 @@ const struct iwl_cfg iwl7265_2n_cfg = {
 const struct iwl_cfg iwl7265_n_cfg = {
 	.name = "Intel(R) Wireless N 7265",
 	.fw_name_pre = IWL7265_FW_PRE,
-	IWL_DEVICE_7005,
+	IWL_DEVICE_7000,
 	.ht_params = &iwl7265_ht_params,
 	.nvm_ver = IWL7265_NVM_VERSION,
 	.nvm_calib_ver = IWL7265_TX_POWER_VERSION,
@@ -331,7 +294,7 @@ const struct iwl_cfg iwl7265_n_cfg = {
 const struct iwl_cfg iwl7265d_2ac_cfg = {
 	.name = "Intel(R) Dual Band Wireless AC 7265",
 	.fw_name_pre = IWL7265D_FW_PRE,
-	IWL_DEVICE_7005D,
+	IWL_DEVICE_7000,
 	.ht_params = &iwl7265_ht_params,
 	.nvm_ver = IWL7265D_NVM_VERSION,
 	.nvm_calib_ver = IWL7265_TX_POWER_VERSION,
@@ -342,7 +305,7 @@ const struct iwl_cfg iwl7265d_2ac_cfg = {
 const struct iwl_cfg iwl7265d_2n_cfg = {
 	.name = "Intel(R) Dual Band Wireless N 7265",
 	.fw_name_pre = IWL7265D_FW_PRE,
-	IWL_DEVICE_7005D,
+	IWL_DEVICE_7000,
 	.ht_params = &iwl7265_ht_params,
 	.nvm_ver = IWL7265D_NVM_VERSION,
 	.nvm_calib_ver = IWL7265_TX_POWER_VERSION,
@@ -353,7 +316,7 @@ const struct iwl_cfg iwl7265d_2n_cfg = {
 const struct iwl_cfg iwl7265d_n_cfg = {
 	.name = "Intel(R) Wireless N 7265",
 	.fw_name_pre = IWL7265D_FW_PRE,
-	IWL_DEVICE_7005D,
+	IWL_DEVICE_7000,
 	.ht_params = &iwl7265_ht_params,
 	.nvm_ver = IWL7265D_NVM_VERSION,
 	.nvm_calib_ver = IWL7265_TX_POWER_VERSION,
@@ -363,5 +326,5 @@ const struct iwl_cfg iwl7265d_n_cfg = {
 
 MODULE_FIRMWARE(IWL7260_MODULE_FIRMWARE(IWL7260_UCODE_API_OK));
 MODULE_FIRMWARE(IWL3160_MODULE_FIRMWARE(IWL7260_UCODE_API_OK));
-MODULE_FIRMWARE(IWL7265_MODULE_FIRMWARE(IWL7265_UCODE_API_OK));
-MODULE_FIRMWARE(IWL7265D_MODULE_FIRMWARE(IWL7265D_UCODE_API_OK));
+MODULE_FIRMWARE(IWL7265_MODULE_FIRMWARE(IWL7260_UCODE_API_OK));
+MODULE_FIRMWARE(IWL7265D_MODULE_FIRMWARE(IWL7260_UCODE_API_OK));

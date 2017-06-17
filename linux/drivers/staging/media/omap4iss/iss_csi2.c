@@ -658,7 +658,7 @@ static void csi2_isr_buffer(struct iss_csi2_device *csi2)
 	 * Let video queue operation restart engine if there is an underrun
 	 * condition.
 	 */
-	if (!buffer)
+	if (buffer == NULL)
 		return;
 
 	csi2_set_outaddr(csi2, buffer->iss_addr);
@@ -828,10 +828,8 @@ static const struct iss_video_operations csi2_issvideo_ops = {
  */
 
 static struct v4l2_mbus_framefmt *
-__csi2_get_format(struct iss_csi2_device *csi2,
-		  struct v4l2_subdev_pad_config *cfg,
-		  unsigned int pad,
-		  enum v4l2_subdev_format_whence which)
+__csi2_get_format(struct iss_csi2_device *csi2, struct v4l2_subdev_pad_config *cfg,
+		  unsigned int pad, enum v4l2_subdev_format_whence which)
 {
 	if (which == V4L2_SUBDEV_FORMAT_TRY)
 		return v4l2_subdev_get_try_format(&csi2->subdev, cfg, pad);
@@ -840,10 +838,8 @@ __csi2_get_format(struct iss_csi2_device *csi2,
 }
 
 static void
-csi2_try_format(struct iss_csi2_device *csi2,
-		struct v4l2_subdev_pad_config *cfg,
-		unsigned int pad,
-		struct v4l2_mbus_framefmt *fmt,
+csi2_try_format(struct iss_csi2_device *csi2, struct v4l2_subdev_pad_config *cfg,
+		unsigned int pad, struct v4l2_mbus_framefmt *fmt,
 		enum v4l2_subdev_format_whence which)
 {
 	u32 pixelcode;
@@ -971,15 +967,14 @@ static int csi2_enum_frame_size(struct v4l2_subdev *sd,
  * @fmt: pointer to v4l2 subdev format structure
  * return -EINVAL or zero on success
  */
-static int csi2_get_format(struct v4l2_subdev *sd,
-			   struct v4l2_subdev_pad_config *cfg,
+static int csi2_get_format(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config *cfg,
 			   struct v4l2_subdev_format *fmt)
 {
 	struct iss_csi2_device *csi2 = v4l2_get_subdevdata(sd);
 	struct v4l2_mbus_framefmt *format;
 
 	format = __csi2_get_format(csi2, cfg, fmt->pad, fmt->which);
-	if (!format)
+	if (format == NULL)
 		return -EINVAL;
 
 	fmt->format = *format;
@@ -993,15 +988,14 @@ static int csi2_get_format(struct v4l2_subdev *sd,
  * @fmt: pointer to v4l2 subdev format structure
  * return -EINVAL or zero on success
  */
-static int csi2_set_format(struct v4l2_subdev *sd,
-			   struct v4l2_subdev_pad_config *cfg,
+static int csi2_set_format(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config *cfg,
 			   struct v4l2_subdev_format *fmt)
 {
 	struct iss_csi2_device *csi2 = v4l2_get_subdevdata(sd);
 	struct v4l2_mbus_framefmt *format;
 
 	format = __csi2_get_format(csi2, cfg, fmt->pad, fmt->which);
-	if (!format)
+	if (format == NULL)
 		return -EINVAL;
 
 	csi2_try_format(csi2, cfg, fmt->pad, &fmt->format, fmt->which);

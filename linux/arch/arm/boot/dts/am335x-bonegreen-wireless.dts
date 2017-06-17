@@ -11,30 +11,12 @@
 #include "am335x-bone-common.dtsi"
 #include "am335x-bonegreen-wl1835.dtsi"
 
-/* pruss: pick one: */
-
-/*
- * /etc/modprobe.d/pruss-blacklist.conf
- *
- * blacklist uio_pruss
- */
-
-#include "am33xx-pruss-rproc.dtsi"
-
-/*
- * /etc/modprobe.d/pruss-blacklist.conf
- *
- * blacklist pruss
- * blacklist pruss_intc
- * blacklist pru-rproc
- */
-
-/* #include "am33xx-pruss-uio.dtsi" */
 
 / {
 	model = "TI AM335x BeagleBone Green Wireless";
 	compatible = "ti,am335x-bone-green", "ti,am335x-bone-black", "ti,am335x-bone", "ti,am33xx";
 };
+
 
 &ldo3_reg {
 	regulator-min-microvolt = <1800000>;
@@ -53,7 +35,6 @@
 	bus-width = <8>;
 	status = "okay";
 };
-
 &uart3 {
 	status = "okay";
 };
@@ -64,4 +45,8 @@
 
 &mac {
 	status = "disabled";
+};
+
+&sgx {
+	status = "okay";
 };

@@ -53,8 +53,8 @@ static int drm_dp_send_dpcd_write(struct drm_dp_mst_topology_mgr *mgr,
 				  struct drm_dp_mst_port *port,
 				  int offset, int size, u8 *bytes);
 
-static void drm_dp_send_link_address(struct drm_dp_mst_topology_mgr *mgr,
-				     struct drm_dp_mst_branch *mstb);
+static int drm_dp_send_link_address(struct drm_dp_mst_topology_mgr *mgr,
+				    struct drm_dp_mst_branch *mstb);
 static int drm_dp_send_enum_path_resources(struct drm_dp_mst_topology_mgr *mgr,
 					   struct drm_dp_mst_branch *mstb,
 					   struct drm_dp_mst_port *port);
@@ -909,7 +909,6 @@ static void drm_dp_destroy_port(struct kref *kref)
 		/* no need to clean up vcpi
 		 * as if we have no connector we never setup a vcpi */
 		drm_dp_port_teardown_pdt(port, port->pdt);
-		port->pdt = DP_PEER_DEVICE_NONE;
 	}
 	kfree(port);
 }
@@ -1062,8 +1061,8 @@ static void drm_dp_check_mstb_guid(struct drm_dp_mst_branch *mstb, u8 *guid)
 	}
 }
 
-static void build_mst_prop_path(const struct drm_dp_mst_branch *mstb,
-				int pnum,
+static void build_mst_prop_path(struct drm_dp_mst_port *port,
+				struct drm_dp_mst_branch *mstb,
 				char *proppath,
 				size_t proppath_size)
 {
@@ -1076,7 +1075,7 @@ static void build_mst_prop_path(const struct drm_dp_mst_branch *mstb,
 		snprintf(temp, sizeof(temp), "-%d", port_num);
 		strlcat(proppath, temp, proppath_size);
 	}
-	snprintf(temp, sizeof(temp), "-%d", pnum);
+	snprintf(temp, sizeof(temp), "-%d", port->port_num);
 	strlcat(proppath, temp, proppath_size);
 }
 
@@ -1137,14 +1136,15 @@ static void drm_dp_add_port(struct drm_dp_mst_branch *mstb,
 		drm_dp_port_teardown_pdt(port, old_pdt);
 
 		ret = drm_dp_port_setup_pdt(port);
-		if (ret == true)
+		if (ret == true) {
 			drm_dp_send_link_address(mstb->mgr, port->mstb);
+			port->mstb->link_address_sent = true;
+		}
 	}
 
 	if (created && !port->input) {
 		char proppath[255];
-
-		build_mst_prop_path(mstb, port->port_num, proppath, sizeof(proppath));
+		build_mst_prop_path(port, mstb, proppath, sizeof(proppath));
 		port->connector = (*mstb->mgr->cbs->add_connector)(mstb->mgr, port, proppath);
 		if (!port->connector) {
 			/* remove it from the port list */
@@ -1155,13 +1155,9 @@ static void drm_dp_add_port(struct drm_dp_mst_branch *mstb,
 			drm_dp_put_port(port);
 			goto out;
 		}
-		if ((port->pdt == DP_PEER_DEVICE_DP_LEGACY_CONV ||
-		     port->pdt == DP_PEER_DEVICE_SST_SINK) &&
-		    port->port_num >= DP_MST_LOGICAL_PORT_0) {
+		if (port->port_num >= 8) {
 			port->cached_edid = drm_get_edid(port->connector, &port->aux.ddc);
-			drm_mode_connector_set_tile_property(port->connector);
 		}
-		(*mstb->mgr->cbs->register_connector)(port->connector);
 	}
 
 out:
@@ -1287,9 +1283,10 @@ static void drm_dp_check_and_send_link_address(struct drm_dp_mst_topology_mgr *m
 {
 	struct drm_dp_mst_port *port;
 	struct drm_dp_mst_branch *mstb_child;
-	if (!mstb->link_address_sent)
+	if (!mstb->link_address_sent) {
 		drm_dp_send_link_address(mgr, mstb);
-
+		mstb->link_address_sent = true;
+	}
 	list_for_each_entry(port, &mstb->ports, next) {
 		if (port->input)
 			continue;
@@ -1541,8 +1538,8 @@ static void drm_dp_queue_down_tx(struct drm_dp_mst_topology_mgr *mgr,
 	mutex_unlock(&mgr->qlock);
 }
 
-static void drm_dp_send_link_address(struct drm_dp_mst_topology_mgr *mgr,
-				     struct drm_dp_mst_branch *mstb)
+static int drm_dp_send_link_address(struct drm_dp_mst_topology_mgr *mgr,
+				    struct drm_dp_mst_branch *mstb)
 {
 	int len;
 	struct drm_dp_sideband_msg_tx *txmsg;
@@ -1550,12 +1547,11 @@ static void drm_dp_send_link_address(struct drm_dp_mst_topology_mgr *mgr,
 
 	txmsg = kzalloc(sizeof(*txmsg), GFP_KERNEL);
 	if (!txmsg)
-		return;
+		return -ENOMEM;
 
 	txmsg->dst = mstb;
 	len = build_link_address(txmsg);
 
-	mstb->link_address_sent = true;
 	drm_dp_queue_down_tx(mgr, txmsg);
 
 	ret = drm_dp_mst_wait_tx_reply(mstb, txmsg);
@@ -1586,12 +1582,11 @@ static void drm_dp_send_link_address(struct drm_dp_mst_topology_mgr *mgr,
 			}
 			(*mgr->cbs->hotplug)(mgr);
 		}
-	} else {
-		mstb->link_address_sent = false;
+	} else
 		DRM_DEBUG_KMS("link address failed %d\n", ret);
-	}
 
 	kfree(txmsg);
+	return 0;
 }
 
 static int drm_dp_send_enum_path_resources(struct drm_dp_mst_topology_mgr *mgr,
@@ -1812,7 +1807,7 @@ int drm_dp_update_payload_part1(struct drm_dp_mst_topology_mgr *mgr)
 				mgr->payloads[i].num_slots = req_payload.num_slots;
 			} else if (mgr->payloads[i].num_slots) {
 				mgr->payloads[i].num_slots = 0;
-				drm_dp_destroy_payload_step1(mgr, port, mgr->payloads[i].vcpi, &mgr->payloads[i]);
+				drm_dp_destroy_payload_step1(mgr, port, port->vcpi.vcpi, &mgr->payloads[i]);
 				req_payload.payload_state = mgr->payloads[i].payload_state;
 				mgr->payloads[i].start_slot = 0;
 			}
@@ -2426,10 +2421,10 @@ struct edid *drm_dp_mst_get_edid(struct drm_connector *connector, struct drm_dp_
 
 	if (port->cached_edid)
 		edid = drm_edid_duplicate(port->cached_edid);
-	else {
+	else
 		edid = drm_get_edid(connector, &port->aux.ddc);
-		drm_mode_connector_set_tile_property(connector);
-	}
+
+	drm_mode_connector_set_tile_property(connector);
 	drm_dp_put_port(port);
 	return edid;
 }
@@ -2807,16 +2802,6 @@ void drm_dp_mst_dump_topology(struct seq_file *m,
 			seq_printf(m, "%02x ", buf[i]);
 		seq_printf(m, "\n");
 
-		/* dump the standard OUI branch header */
-		ret = drm_dp_dpcd_read(mgr->aux, DP_BRANCH_OUI, buf, DP_BRANCH_OUI_HEADER_SIZE);
-		seq_printf(m, "branch oui: ");
-		for (i = 0; i < 0x3; i++)
-			seq_printf(m, "%02x", buf[i]);
-		seq_printf(m, " devid: ");
-		for (i = 0x3; i < 0x8; i++)
-			seq_printf(m, "%c", buf[i]);
-		seq_printf(m, " revision: hw: %x.%x sw: %x.%x", buf[0x9] >> 4, buf[0x9] & 0xf, buf[0xa], buf[0xb]);
-		seq_printf(m, "\n");
 		bret = dump_dp_payload_table(mgr, buf);
 		if (bret == true) {
 			seq_printf(m, "payload table: ");
@@ -2875,7 +2860,6 @@ static void drm_dp_destroy_connector_work(struct work_struct *work)
 		mgr->cbs->destroy_connector(mgr, port->connector);
 
 		drm_dp_port_teardown_pdt(port, port->pdt);
-		port->pdt = DP_PEER_DEVICE_NONE;
 
 		if (!port->input && port->vcpi.vcpi > 0) {
 			drm_dp_mst_reset_vcpi_slots(mgr, port);

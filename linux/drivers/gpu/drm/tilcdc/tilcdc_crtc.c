@@ -41,11 +41,11 @@ struct tilcdc_crtc {
 	/* for deferred fb unref's: */
 	struct drm_flip_work unref_work;
 
-	/* Only set if an external encoder is connected */
-	bool simulate_vesa_sync;
-
 	int sync_lost_count;
 	bool frame_intact;
+
+	/* Only set if an external encoder is connected */
+	bool simulate_vesa_sync;
 };
 #define to_tilcdc_crtc(x) container_of(x, struct tilcdc_crtc, base)
 
@@ -109,44 +109,25 @@ static void start(struct drm_crtc *crtc)
 	tilcdc_clear(dev, LCDC_DMA_CTRL_REG, LCDC_DUAL_FRAME_BUFFER_ENABLE);
 	tilcdc_set(dev, LCDC_RASTER_CTRL_REG, LCDC_PALETTE_LOAD_MODE(DATA_ONLY));
 	tilcdc_set(dev, LCDC_RASTER_CTRL_REG, LCDC_RASTER_ENABLE);
-
-	drm_crtc_vblank_on(crtc);
 }
 
 static void stop(struct drm_crtc *crtc)
 {
-	struct tilcdc_crtc *tilcdc_crtc = to_tilcdc_crtc(crtc);
 	struct drm_device *dev = crtc->dev;
-	struct tilcdc_drm_private *priv = dev->dev_private;
 
-	tilcdc_crtc->frame_done = false;
 	tilcdc_clear(dev, LCDC_RASTER_CTRL_REG, LCDC_RASTER_ENABLE);
-
-	/*
-	 * if necessary wait for framedone irq which will still come
-	 * before putting things to sleep..
-	 */
-	if (priv->rev == 2) {
-		int ret = wait_event_timeout(tilcdc_crtc->frame_done_wq,
-					     tilcdc_crtc->frame_done,
-					     msecs_to_jiffies(500));
-		if (ret == 0)
-			dev_err(dev->dev, "%s: timeout waiting for framedone\n",
-				__func__);
-	}
-
-	drm_crtc_vblank_off(crtc);
 }
 
 static void tilcdc_crtc_destroy(struct drm_crtc *crtc)
 {
 	struct tilcdc_crtc *tilcdc_crtc = to_tilcdc_crtc(crtc);
 
-	tilcdc_crtc_dpms(crtc, DRM_MODE_DPMS_OFF);
+	WARN_ON(tilcdc_crtc->dpms == DRM_MODE_DPMS_ON);
 
-	of_node_put(crtc->port);
 	drm_crtc_cleanup(crtc);
 	drm_flip_work_cleanup(&tilcdc_crtc->unref_work);
+
+	kfree(tilcdc_crtc);
 }
 
 static int tilcdc_verify_fb(struct drm_crtc *crtc, struct drm_framebuffer *fb)
@@ -232,7 +213,22 @@ void tilcdc_crtc_dpms(struct drm_crtc *crtc, int mode)
 		pm_runtime_get_sync(dev->dev);
 		start(crtc);
 	} else {
+		tilcdc_crtc->frame_done = false;
 		stop(crtc);
+
+		/*
+		 * if necessary wait for framedone irq which will still come
+		 * before putting things to sleep..
+		 */
+		if (priv->rev == 2) {
+			int ret = wait_event_timeout(
+					tilcdc_crtc->frame_done_wq,
+					tilcdc_crtc->frame_done,
+					msecs_to_jiffies(50));
+			if (ret == 0)
+				dev_err(dev->dev, "timeout waiting for framedone\n");
+		}
+
 		pm_runtime_put_sync(dev->dev);
 
 		if (tilcdc_crtc->next_fb) {
@@ -249,13 +245,6 @@ void tilcdc_crtc_dpms(struct drm_crtc *crtc, int mode)
 
 		drm_flip_work_commit(&tilcdc_crtc->unref_work, priv->wq);
 	}
-}
-
-int tilcdc_crtc_current_dpms_state(struct drm_crtc *crtc)
-{
-	struct tilcdc_crtc *tilcdc_crtc = to_tilcdc_crtc(crtc);
-
-	return tilcdc_crtc->dpms;
 }
 
 static bool tilcdc_crtc_mode_fixup(struct drm_crtc *crtc,
@@ -730,34 +719,30 @@ irqreturn_t tilcdc_crtc_irq(struct drm_crtc *crtc)
 			tilcdc_crtc->frame_intact = true;
 	}
 
-	if (stat & LCDC_FIFO_UNDERFLOW)
-		dev_err_ratelimited(dev->dev, "%s(0x%08x): FIFO underfow",
-				    __func__, stat);
-
-	/* For revision 2 only */
 	if (priv->rev == 2) {
 		if (stat & LCDC_FRAME_DONE) {
 			tilcdc_crtc->frame_done = true;
 			wake_up(&tilcdc_crtc->frame_done_wq);
 		}
-
-		if (stat & LCDC_SYNC_LOST) {
-			dev_err_ratelimited(dev->dev, "%s(0x%08x): Sync lost",
-					    __func__, stat);
-			tilcdc_crtc->frame_intact = false;
-			if (tilcdc_crtc->sync_lost_count++ >
-			    SYNC_LOST_COUNT_LIMIT) {
-				dev_err(dev->dev, "%s(0x%08x): Sync lost flood detected, disabling the interrupt", __func__, stat);
-				tilcdc_write(dev, LCDC_INT_ENABLE_CLR_REG,
-					     LCDC_SYNC_LOST);
-			}
-		}
-
-		/* Indicate to LCDC that the interrupt service routine has
-		 * completed, see 13.3.6.1.6 in AM335x TRM.
-		 */
 		tilcdc_write(dev, LCDC_END_OF_INT_IND_REG, 0);
 	}
+
+	if (stat & LCDC_SYNC_LOST) {
+		dev_info_ratelimited(dev->dev, "%s(0x%08x): Sync lost",
+				    __func__, stat);
+		tilcdc_crtc->frame_intact = false;
+		if (tilcdc_crtc->sync_lost_count++ > SYNC_LOST_COUNT_LIMIT) {
+			dev_err(dev->dev,
+				"%s(0x%08x): Sync lost flood detected, disabling the interrupt",
+				__func__, stat);
+			tilcdc_write(dev, LCDC_INT_ENABLE_CLR_REG,
+				     LCDC_SYNC_LOST);
+		}
+	}
+
+	if (stat & LCDC_FIFO_UNDERFLOW)
+		dev_info_ratelimited(dev->dev, "%s(0x%08x): FIFO underfow",
+				    __func__, stat);
 
 	return IRQ_HANDLED;
 }
@@ -783,12 +768,11 @@ void tilcdc_crtc_cancel_page_flip(struct drm_crtc *crtc, struct drm_file *file)
 
 struct drm_crtc *tilcdc_crtc_create(struct drm_device *dev)
 {
-	struct tilcdc_drm_private *priv = dev->dev_private;
 	struct tilcdc_crtc *tilcdc_crtc;
 	struct drm_crtc *crtc;
 	int ret;
 
-	tilcdc_crtc = devm_kzalloc(dev->dev, sizeof(*tilcdc_crtc), GFP_KERNEL);
+	tilcdc_crtc = kzalloc(sizeof(*tilcdc_crtc), GFP_KERNEL);
 	if (!tilcdc_crtc) {
 		dev_err(dev->dev, "allocation failed\n");
 		return NULL;
@@ -809,24 +793,6 @@ struct drm_crtc *tilcdc_crtc_create(struct drm_device *dev)
 		goto fail;
 
 	drm_crtc_helper_add(crtc, &tilcdc_crtc_helper_funcs);
-
-	if (priv->is_componentized) {
-		struct device_node *ports =
-			of_get_child_by_name(dev->dev->of_node, "ports");
-
-		if (ports) {
-			crtc->port = of_get_child_by_name(ports, "port");
-			of_node_put(ports);
-		} else {
-			crtc->port =
-				of_get_child_by_name(dev->dev->of_node, "port");
-		}
-		if (!crtc->port) { /* This should never happen */
-			dev_err(dev->dev, "Port node not found in %s\n",
-				dev->dev->of_node->full_name);
-			goto fail;
-		}
-	}
 
 	return crtc;
 

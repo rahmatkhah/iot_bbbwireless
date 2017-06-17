@@ -35,6 +35,8 @@
 #define MEN_Z135_BAUD_REG		0x810
 #define MEN_Z135_TIMEOUT		0x814
 
+#define MEN_Z135_MEM_SIZE		0x818
+
 #define IRQ_ID(x) ((x) & 0x1f)
 
 #define MEN_Z135_IER_RXCIEN BIT(0)		/* RX Space IRQ */
@@ -122,7 +124,6 @@ MODULE_PARM_DESC(rx_timeout, "RX timeout. "
 struct men_z135_port {
 	struct uart_port port;
 	struct mcb_device *mdev;
-	struct resource *mem;
 	unsigned char *rxbuf;
 	u32 stat_reg;
 	spinlock_t lock;
@@ -733,30 +734,22 @@ static const char *men_z135_type(struct uart_port *port)
 
 static void men_z135_release_port(struct uart_port *port)
 {
-	struct men_z135_port *uart = to_men_z135(port);
-
 	iounmap(port->membase);
 	port->membase = NULL;
 
-	mcb_release_mem(uart->mem);
+	release_mem_region(port->mapbase, MEN_Z135_MEM_SIZE);
 }
 
 static int men_z135_request_port(struct uart_port *port)
 {
-	struct men_z135_port *uart = to_men_z135(port);
-	struct mcb_device *mdev = uart->mdev;
-	struct resource *mem;
+	int size = MEN_Z135_MEM_SIZE;
 
-	mem = mcb_request_mem(uart->mdev, dev_name(&mdev->dev));
-	if (IS_ERR(mem))
-		return PTR_ERR(mem);
+	if (!request_mem_region(port->mapbase, size, "men_z135_port"))
+		return -EBUSY;
 
-	port->mapbase = mem->start;
-	uart->mem = mem;
-
-	port->membase = ioremap(mem->start, resource_size(mem));
+	port->membase = ioremap(port->mapbase, MEN_Z135_MEM_SIZE);
 	if (port->membase == NULL) {
-		mcb_release_mem(mem);
+		release_mem_region(port->mapbase, MEN_Z135_MEM_SIZE);
 		return -ENOMEM;
 	}
 
@@ -846,6 +839,7 @@ static int men_z135_probe(struct mcb_device *mdev,
 	uart->port.membase = NULL;
 	uart->mdev = mdev;
 
+	spin_lock_init(&uart->port.lock);
 	spin_lock_init(&uart->lock);
 
 	err = uart_add_one_port(&men_z135_driver, &uart->port);

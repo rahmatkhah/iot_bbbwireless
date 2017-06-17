@@ -5,7 +5,7 @@
  *
  * See Documentation/filesystems/aufs/design/06mmap.txt
  *
- * Copyright (c) 2014-2017 Junjro R. Okajima
+ * Copyright (c) 2014 Junjro R. Okajima
  * Copyright (c) 2014 Ian Campbell
  */
 
@@ -19,7 +19,8 @@ static inline void prfile_trace(struct file *f, struct file *pr,
 {
 #ifdef PRFILE_TRACE
 	if (pr)
-		pr_info("%s:%d: %s, %pD2\n", func, line, func2, f);
+		pr_info("%s:%d: %s, %s\n", func, line, func2,
+			f ? (char *)f->f_path.dentry->d_name.name : "(null)");
 #endif
 }
 

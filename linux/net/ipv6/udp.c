@@ -182,12 +182,10 @@ static inline int compute_score(struct sock *sk, struct net *net,
 		score++;
 	}
 
-	if (sk->sk_incoming_cpu == raw_smp_processor_id())
-		score++;
-
 	return score;
 }
 
+#define SCORE2_MAX (1 + 1 + 1)
 static inline int compute_score2(struct sock *sk, struct net *net,
 				 const struct in6_addr *saddr, __be16 sport,
 				 const struct in6_addr *daddr,
@@ -225,9 +223,6 @@ static inline int compute_score2(struct sock *sk, struct net *net,
 		score++;
 	}
 
-	if (sk->sk_incoming_cpu == raw_smp_processor_id())
-		score++;
-
 	return score;
 }
 
@@ -256,7 +251,8 @@ begin:
 				hash = udp6_ehashfn(net, daddr, hnum,
 						    saddr, sport);
 				matches = 1;
-			}
+			} else if (score == SCORE2_MAX)
+				goto exact_match;
 		} else if (score == badness && reuseport) {
 			matches++;
 			if (reciprocal_scale(hash, matches) == 0)
@@ -273,6 +269,7 @@ begin:
 		goto begin;
 
 	if (result) {
+exact_match:
 		if (unlikely(!atomic_inc_not_zero_hint(&result->sk_refcnt, 2)))
 			result = NULL;
 		else if (unlikely(compute_score2(result, net, saddr, sport,
@@ -402,7 +399,6 @@ int udpv6_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
 	int peeked, off = 0;
 	int err;
 	int is_udplite = IS_UDPLITE(sk);
-	bool checksum_valid = false;
 	int is_udp4;
 	bool slow;
 
@@ -434,12 +430,11 @@ try_again:
 	 */
 
 	if (copied < ulen || UDP_SKB_CB(skb)->partial_cov) {
-		checksum_valid = !udp_lib_checksum_complete(skb);
-		if (!checksum_valid)
+		if (udp_lib_checksum_complete(skb))
 			goto csum_copy_err;
 	}
 
-	if (checksum_valid || skb_csum_unnecessary(skb))
+	if (skb_csum_unnecessary(skb))
 		err = skb_copy_datagram_msg(skb, sizeof(struct udphdr),
 					    msg, copied);
 	else {
@@ -498,8 +493,7 @@ try_again:
 
 	if (is_udp4) {
 		if (inet->cmsg_flags)
-			ip_cmsg_recv_offset(msg, skb,
-					    sizeof(struct udphdr), off);
+			ip_cmsg_recv(msg, skb);
 	} else {
 		if (np->rxopt.all)
 			ip6_datagram_recv_specific_ctl(sk, msg, skb);
@@ -650,7 +644,7 @@ int udpv6_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
 
 		/* if we're overly short, let UDP handle it */
 		encap_rcv = ACCESS_ONCE(up->encap_rcv);
-		if (encap_rcv) {
+		if (skb->len > sizeof(struct udphdr) && encap_rcv) {
 			int ret;
 
 			/* Verify checksum before giving to encap */
@@ -1504,8 +1498,7 @@ int __net_init udp6_proc_init(struct net *net)
 	return udp_proc_register(net, &udp6_seq_afinfo);
 }
 
-void udp6_proc_exit(struct net *net)
-{
+void udp6_proc_exit(struct net *net) {
 	udp_proc_unregister(net, &udp6_seq_afinfo);
 }
 #endif /* CONFIG_PROC_FS */

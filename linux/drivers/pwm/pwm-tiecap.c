@@ -97,7 +97,7 @@ static int ecap_pwm_config(struct pwm_chip *chip, struct pwm_device *pwm,
 
 	writew(reg_val, pc->mmio_base + ECCTL2);
 
-	if (!pwm_is_enabled(pwm)) {
+	if (!test_bit(PWMF_ENABLED, &pwm->flags)) {
 		/* Update active registers if not running */
 		writel(duty_cycles, pc->mmio_base + CAP2);
 		writel(period_cycles, pc->mmio_base + CAP1);
@@ -111,7 +111,7 @@ static int ecap_pwm_config(struct pwm_chip *chip, struct pwm_device *pwm,
 		writel(period_cycles, pc->mmio_base + CAP3);
 	}
 
-	if (!pwm_is_enabled(pwm)) {
+	if (!test_bit(PWMF_ENABLED, &pwm->flags)) {
 		reg_val = readw(pc->mmio_base + ECCTL2);
 		/* Disable APWM mode to put APWM output Low */
 		reg_val &= ~ECCTL2_APWM_MODE;
@@ -179,7 +179,7 @@ static void ecap_pwm_disable(struct pwm_chip *chip, struct pwm_device *pwm)
 
 static void ecap_pwm_free(struct pwm_chip *chip, struct pwm_device *pwm)
 {
-	if (pwm_is_enabled(pwm)) {
+	if (test_bit(PWMF_ENABLED, &pwm->flags)) {
 		dev_warn(chip->dev, "Removing PWM device without disabling\n");
 		pm_runtime_put_sync(chip->dev);
 	}
@@ -195,7 +195,6 @@ static const struct pwm_ops ecap_pwm_ops = {
 };
 
 static const struct of_device_id ecap_of_match[] = {
-	{ .compatible	= "ti,am3352-ecap" },
 	{ .compatible	= "ti,am33xx-ecap" },
 	{},
 };
@@ -203,7 +202,6 @@ MODULE_DEVICE_TABLE(of, ecap_of_match);
 
 static int ecap_pwm_probe(struct platform_device *pdev)
 {
-	struct device_node *np = pdev->dev.of_node;
 	int ret;
 	struct resource *r;
 	struct clk *clk;
@@ -215,13 +213,6 @@ static int ecap_pwm_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	clk = devm_clk_get(&pdev->dev, "fck");
-	if (IS_ERR(clk)) {
-		if (of_device_is_compatible(np, "ti,am33xx-ecap")) {
-			dev_warn(&pdev->dev, "Binding is obsolete.\n");
-			clk = devm_clk_get(pdev->dev.parent, "fck");
-		}
-	}
-
 	if (IS_ERR(clk)) {
 		dev_err(&pdev->dev, "failed to get clock\n");
 		return PTR_ERR(clk);
@@ -315,11 +306,8 @@ static int ecap_pwm_suspend(struct device *dev)
 	ecap_pwm_save_context(pc);
 
 	/* Disable explicitly if PWM is running */
-	if (pwm_is_enabled(pwm))
+	if (test_bit(PWMF_ENABLED, &pwm->flags))
 		pm_runtime_put_sync(dev);
-
-	/* Select sleep pin state */
-	pinctrl_pm_select_sleep_state(dev);
 
 	return 0;
 }
@@ -329,11 +317,8 @@ static int ecap_pwm_resume(struct device *dev)
 	struct ecap_pwm_chip *pc = dev_get_drvdata(dev);
 	struct pwm_device *pwm = pc->chip.pwms;
 
-	/* Select default pin state */
-	pinctrl_pm_select_default_state(dev);
-
 	/* Enable explicitly if PWM was running */
-	if (pwm_is_enabled(pwm))
+	if (test_bit(PWMF_ENABLED, &pwm->flags))
 		pm_runtime_get_sync(dev);
 
 	ecap_pwm_restore_context(pc);

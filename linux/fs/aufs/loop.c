@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2017 Junjiro R. Okajima
+ * Copyright (C) 2005-2016 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -60,17 +60,17 @@ int au_test_loopback_kthread(void)
 {
 	int ret;
 	struct task_struct *tsk = current;
-	char c, comm[sizeof(tsk->comm)];
+	char comm[sizeof(tsk->comm)];
+#define KTHREAD_NAME "kworker/"
 
 	ret = 0;
 	if (tsk->flags & PF_KTHREAD) {
 		get_task_comm(comm, tsk);
-		c = comm[4];
-		ret = ('0' <= c && c <= '9'
-		       && !strncmp(comm, "loop", 4));
+		ret = !strncmp(comm, KTHREAD_NAME, sizeof(KTHREAD_NAME) - 1);
 	}
 
 	return ret;
+#undef KTHREAD_NAME
 }
 
 /* ---------------------------------------------------------------------- */
@@ -104,8 +104,7 @@ void au_warn_loopback(struct super_block *h_sb)
 	new_nelem = au_warn_loopback_nelem + au_warn_loopback_step;
 	a = au_kzrealloc(au_warn_loopback_array,
 			 au_warn_loopback_nelem * sizeof(unsigned long),
-			 new_nelem * sizeof(unsigned long), GFP_ATOMIC,
-			 /*may_shrink*/0);
+			 new_nelem * sizeof(unsigned long), GFP_ATOMIC);
 	if (a) {
 		au_warn_loopback_nelem = new_nelem;
 		au_warn_loopback_array = a;
@@ -143,5 +142,5 @@ void au_loopback_fin(void)
 {
 	if (backing_file_func)
 		symbol_put(loop_backing_file);
-	kfree(au_warn_loopback_array);
+	au_delayed_kfree(au_warn_loopback_array);
 }

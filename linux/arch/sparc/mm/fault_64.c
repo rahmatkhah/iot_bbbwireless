@@ -413,9 +413,8 @@ good_area:
 	 * that here.
 	 */
 	if ((fault_code & FAULT_CODE_ITLB) && !(vma->vm_flags & VM_EXEC)) {
-		WARN(address != regs->tpc,
-		     "address (%lx) != regs->tpc (%lx)\n", address, regs->tpc);
-		WARN_ON(regs->tstate & TSTATE_PRIV);
+		BUG_ON(address != regs->tpc);
+		BUG_ON(regs->tstate & TSTATE_PRIV);
 		goto bad_area;
 	}
 
@@ -479,14 +478,14 @@ good_area:
 	up_read(&mm->mmap_sem);
 
 	mm_rss = get_mm_rss(mm);
-#if defined(CONFIG_TRANSPARENT_HUGEPAGE)
-	mm_rss -= (mm->context.thp_pte_count * (HPAGE_SIZE / PAGE_SIZE));
+#if defined(CONFIG_HUGETLB_PAGE) || defined(CONFIG_TRANSPARENT_HUGEPAGE)
+	mm_rss -= (mm->context.huge_pte_count * (HPAGE_SIZE / PAGE_SIZE));
 #endif
 	if (unlikely(mm_rss >
 		     mm->context.tsb_block[MM_TSB_BASE].tsb_rss_limit))
 		tsb_grow(mm, MM_TSB_BASE, mm_rss);
 #if defined(CONFIG_HUGETLB_PAGE) || defined(CONFIG_TRANSPARENT_HUGEPAGE)
-	mm_rss = mm->context.hugetlb_pte_count + mm->context.thp_pte_count;
+	mm_rss = mm->context.huge_pte_count;
 	if (unlikely(mm_rss >
 		     mm->context.tsb_block[MM_TSB_HUGE].tsb_rss_limit)) {
 		if (mm->context.tsb_block[MM_TSB_HUGE].tsb)

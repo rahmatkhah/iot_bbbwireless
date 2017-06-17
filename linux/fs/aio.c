@@ -40,7 +40,7 @@
 #include <linux/ramfs.h>
 #include <linux/percpu-refcount.h>
 #include <linux/mount.h>
-#include <linux/swork.h>
+#include <linux/work-simple.h>
 
 #include <asm/kmap_types.h>
 #include <asm/uaccess.h>
@@ -240,12 +240,7 @@ static struct dentry *aio_mount(struct file_system_type *fs_type,
 	static const struct dentry_operations ops = {
 		.d_dname	= simple_dname,
 	};
-	struct dentry *root = mount_pseudo(fs_type, "aio:", NULL, &ops,
-					   AIO_RING_MAGIC);
-
-	if (!IS_ERR(root))
-		root->d_sb->s_iflags |= SB_I_NOEXEC;
-	return root;
+	return mount_pseudo(fs_type, "aio:", NULL, &ops, AIO_RING_MAGIC);
 }
 
 /* aio_setup
@@ -315,9 +310,15 @@ static void aio_free_ring(struct kioctx *ctx)
 	}
 }
 
-static int aio_ring_mremap(struct vm_area_struct *vma)
+static int aio_ring_mmap(struct file *file, struct vm_area_struct *vma)
 {
-	struct file *file = vma->vm_file;
+	vma->vm_flags |= VM_DONTEXPAND;
+	vma->vm_ops = &generic_file_vm_ops;
+	return 0;
+}
+
+static int aio_ring_remap(struct file *file, struct vm_area_struct *vma)
+{
 	struct mm_struct *mm = vma->vm_mm;
 	struct kioctx_table *table;
 	int i, res = -EINVAL;
@@ -343,24 +344,9 @@ static int aio_ring_mremap(struct vm_area_struct *vma)
 	return res;
 }
 
-static const struct vm_operations_struct aio_ring_vm_ops = {
-	.mremap		= aio_ring_mremap,
-#if IS_ENABLED(CONFIG_MMU)
-	.fault		= filemap_fault,
-	.map_pages	= filemap_map_pages,
-	.page_mkwrite	= filemap_page_mkwrite,
-#endif
-};
-
-static int aio_ring_mmap(struct file *file, struct vm_area_struct *vma)
-{
-	vma->vm_flags |= VM_DONTEXPAND;
-	vma->vm_ops = &aio_ring_vm_ops;
-	return 0;
-}
-
 static const struct file_operations aio_ring_fops = {
 	.mmap = aio_ring_mmap,
+	.mremap = aio_ring_remap,
 };
 
 #if IS_ENABLED(CONFIG_MIGRATION)

@@ -1,7 +1,7 @@
 /*
  * Remote Processor Procedure Call Driver
  *
- * Copyright (C) 2012-2016 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright(c) 2012-2015 Texas Instruments. All rights reserved.
  *
  * Erik Rainey <erik.rainey@ti.com>
  * Suman Anna <s-anna@ti.com>
@@ -306,12 +306,12 @@ struct rppc_dma_buf *rppc_find_dmabuf(struct rppc_instance *rpc, int fd)
  * Return: 0 on success, or an appropriate failure code otherwise
  */
 static int rppc_map_page(struct rppc_instance *rpc, int fd, u32 offset,
-			 u8 **base_ptr, struct dma_buf **dmabuf)
+			 uint8_t **base_ptr, struct dma_buf **dmabuf)
 {
 	int ret = 0;
-	u8 *ptr = NULL;
+	uint8_t *ptr = NULL;
 	struct dma_buf *dbuf = NULL;
-	u32 pg_offset;
+	uint32_t pg_offset;
 	unsigned long pg_num;
 	size_t begin, end = PAGE_SIZE;
 	struct device *dev = rpc->dev;
@@ -331,7 +331,7 @@ static int rppc_map_page(struct rppc_instance *rpc, int fd, u32 offset,
 		goto out;
 	}
 
-	ret = dma_buf_begin_cpu_access(dbuf, DMA_BIDIRECTIONAL);
+	ret = dma_buf_begin_cpu_access(dbuf, begin, end, DMA_BIDIRECTIONAL);
 	if (ret < 0) {
 		dev_err(dev, "failed to acquire cpu access to the dma buf fd = %d offset = 0x%x, ret = %d\n",
 			fd, offset, ret);
@@ -353,7 +353,7 @@ static int rppc_map_page(struct rppc_instance *rpc, int fd, u32 offset,
 	return 0;
 
 end_cpuaccess:
-	dma_buf_end_cpu_access(dbuf, DMA_BIDIRECTIONAL);
+	dma_buf_end_cpu_access(dbuf, begin, end, DMA_BIDIRECTIONAL);
 put_dmabuf:
 	dma_buf_put(dbuf);
 out:
@@ -372,9 +372,9 @@ out:
  * the functionality of rppc_map_page.
  */
 static void rppc_unmap_page(struct rppc_instance *rpc, u32 offset,
-			    u8 *base_ptr, struct dma_buf *dmabuf)
+			    uint8_t *base_ptr, struct dma_buf *dmabuf)
 {
-	u32 pg_offset;
+	uint32_t pg_offset;
 	unsigned long pg_num;
 	size_t begin, end = PAGE_SIZE;
 	struct device *dev = rpc->dev;
@@ -389,7 +389,7 @@ static void rppc_unmap_page(struct rppc_instance *rpc, u32 offset,
 	dev_dbg(dev, "Unkmaping base_ptr = %p of buf = %p from %zu to %zu bytes\n",
 		base_ptr, dmabuf, begin, end);
 	dma_buf_kunmap(dmabuf, pg_num, base_ptr);
-	dma_buf_end_cpu_access(dmabuf, DMA_BIDIRECTIONAL);
+	dma_buf_end_cpu_access(dmabuf, begin, end, DMA_BIDIRECTIONAL);
 	dma_buf_put(dmabuf);
 }
 
@@ -475,10 +475,10 @@ out:
 int rppc_xlate_buffers(struct rppc_instance *rpc, struct rppc_function *func,
 		       int direction)
 {
-	u8 *base_ptr = NULL;
+	uint8_t *base_ptr = NULL;
 	struct dma_buf *dbuf = NULL;
 	struct device *dev = rpc->dev;
-	u32 ptr_idx, pri_offset, sec_offset, offset, pg_offset, size;
+	uint32_t ptr_idx, pri_offset, sec_offset, offset, pg_offset, size;
 	int i, limit, inc = 1;
 	virt_addr_t kva, uva, buva;
 	dev_addr_t rda;
@@ -590,7 +590,7 @@ int rppc_xlate_buffers(struct rppc_instance *rpc, struct rppc_function *func,
 			 * it back on the function return path
 			 */
 			func->translations[i].fd = (int32_t)uva;
-			*(virt_addr_t *)kva = rda;
+			*(phys_addr_t *)kva = rda;
 			dev_dbg(dev, "replaced UVA %p with RDA %p at KVA %p\n",
 				(void *)uva, (void *)rda, (void *)kva);
 		} else if (direction == RPPC_RPA_TO_UVA) {
@@ -600,7 +600,7 @@ int rppc_xlate_buffers(struct rppc_instance *rpc, struct rppc_function *func,
 				goto unmap;
 			}
 
-			rda = *(virt_addr_t *)kva;
+			rda = *(phys_addr_t *)kva;
 			uva = (virt_addr_t)func->translations[i].fd;
 			WARN_ON(!uva);
 			*(virt_addr_t *)kva = uva;

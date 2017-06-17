@@ -80,15 +80,12 @@ struct rt_8723a_firmware_hdr {
 	/*  8-byte alinment required */
 
 	/*  LONG WORD 0 ---- */
-	__le16		Signature;  /*
-				     * 92C0: test chip; 92C, 88C0: test chip;
-				     * 88C1: MP A-cut; 92C1: MP A-cut
-				     */
+	u16		Signature;	/*  92C0: test chip; 92C, 88C0: test chip; 88C1: MP A-cut; 92C1: MP A-cut */
 	u8		Category;	/*  AP/NIC and USB/PCI */
 	u8		Function;	/*  Reserved for different FW function indcation, for further use when driver needs to download different FW in different conditions */
-	__le16		Version;		/*  FW Version */
+	u16		Version;		/*  FW Version */
 	u8		Subversion;	/*  FW Subversion, default 0x00 */
-	u8		Rsvd1;
+	u16		Rsvd1;
 
 
 	/*  LONG WORD 1 ---- */
@@ -96,16 +93,16 @@ struct rt_8723a_firmware_hdr {
 	u8		Date;	/*  Release time Date field */
 	u8		Hour;	/*  Release time Hour field */
 	u8		Minute;	/*  Release time Minute field */
-	__le16		RamCodeSize;	/*  The size of RAM code */
-	__le16		Rsvd2;
+	u16		RamCodeSize;	/*  The size of RAM code */
+	u16		Rsvd2;
 
 	/*  LONG WORD 2 ---- */
-	__le32		SvnIdx;	/*  The SVN entry index */
-	__le32		Rsvd3;
+	u32		SvnIdx;	/*  The SVN entry index */
+	u32		Rsvd3;
 
 	/*  LONG WORD 3 ---- */
-	__le32		Rsvd4;
-	__le32		Rsvd5;
+	u32		Rsvd4;
+	u32		Rsvd5;
 };
 
 #define DRIVER_EARLY_INT_TIME		0x05
@@ -196,7 +193,7 @@ enum ChannelPlan
 /*  |         |            Reserved(14bytes)	      | */
 /*  */
 
-/*  PG data exclude header, dummy 6 bytes from CP test and reserved 1byte. */
+/*  PG data exclude header, dummy 6 bytes frome CP test and reserved 1byte. */
 #define EFUSE_OOB_PROTECT_BYTES			15
 
 #define EFUSE_REAL_CONTENT_LEN_8723A	512

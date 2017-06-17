@@ -47,6 +47,7 @@
 
 #include "../include/obd.h"
 #include "../include/obd_class.h"
+#include "../include/dt_object.h"
 #include "../include/obd_support.h"
 #include "../include/lustre_req_layout.h"
 #include "../include/lustre_fid.h"
@@ -58,9 +59,8 @@
  * Note: this function is only used for testing, it is no safe for production
  * use.
  */
-static int
-ldebugfs_fid_write_common(const char __user *buffer, size_t count,
-			  struct lu_seq_range *range)
+static int lprocfs_fid_write_common(const char __user *buffer, size_t count,
+				    struct lu_seq_range *range)
 {
 	struct lu_seq_range tmp;
 	int rc;
@@ -92,11 +92,10 @@ ldebugfs_fid_write_common(const char __user *buffer, size_t count,
 	return count;
 }
 
-/* Client side debugfs stuff */
-static ssize_t
-ldebugfs_fid_space_seq_write(struct file *file,
-			     const char __user *buffer,
-			     size_t count, loff_t *off)
+/* Client side procfs stuff */
+static ssize_t lprocfs_fid_space_seq_write(struct file *file,
+					   const char __user *buffer,
+					   size_t count, loff_t *off)
 {
 	struct lu_client_seq *seq;
 	int rc;
@@ -105,7 +104,7 @@ ldebugfs_fid_space_seq_write(struct file *file,
 	LASSERT(seq != NULL);
 
 	mutex_lock(&seq->lcs_mutex);
-	rc = ldebugfs_fid_write_common(buffer, count, &seq->lcs_space);
+	rc = lprocfs_fid_write_common(buffer, count, &seq->lcs_space);
 
 	if (rc == 0) {
 		CDEBUG(D_INFO, "%s: Space: "DRANGE"\n",
@@ -118,7 +117,7 @@ ldebugfs_fid_space_seq_write(struct file *file,
 }
 
 static int
-ldebugfs_fid_space_seq_show(struct seq_file *m, void *unused)
+lprocfs_fid_space_seq_show(struct seq_file *m, void *unused)
 {
 	struct lu_client_seq *seq = (struct lu_client_seq *)m->private;
 
@@ -131,10 +130,9 @@ ldebugfs_fid_space_seq_show(struct seq_file *m, void *unused)
 	return 0;
 }
 
-static ssize_t
-ldebugfs_fid_width_seq_write(struct file *file,
-			     const char __user *buffer,
-			     size_t count, loff_t *off)
+static ssize_t lprocfs_fid_width_seq_write(struct file *file,
+					   const char __user *buffer,
+					   size_t count, loff_t *off)
 {
 	struct lu_client_seq *seq;
 	__u64  max;
@@ -156,8 +154,10 @@ ldebugfs_fid_width_seq_write(struct file *file,
 	if (val <= max && val > 0) {
 		seq->lcs_width = val;
 
-		CDEBUG(D_INFO, "%s: Sequence size: %llu\n", seq->lcs_name,
-		       seq->lcs_width);
+		if (rc == 0) {
+			CDEBUG(D_INFO, "%s: Sequence size: %llu\n",
+			       seq->lcs_name, seq->lcs_width);
+		}
 	}
 
 	mutex_unlock(&seq->lcs_mutex);
@@ -166,7 +166,7 @@ ldebugfs_fid_width_seq_write(struct file *file,
 }
 
 static int
-ldebugfs_fid_width_seq_show(struct seq_file *m, void *unused)
+lprocfs_fid_width_seq_show(struct seq_file *m, void *unused)
 {
 	struct lu_client_seq *seq = (struct lu_client_seq *)m->private;
 
@@ -180,7 +180,7 @@ ldebugfs_fid_width_seq_show(struct seq_file *m, void *unused)
 }
 
 static int
-ldebugfs_fid_fid_seq_show(struct seq_file *m, void *unused)
+lprocfs_fid_fid_seq_show(struct seq_file *m, void *unused)
 {
 	struct lu_client_seq *seq = (struct lu_client_seq *)m->private;
 
@@ -194,7 +194,7 @@ ldebugfs_fid_fid_seq_show(struct seq_file *m, void *unused)
 }
 
 static int
-ldebugfs_fid_server_seq_show(struct seq_file *m, void *unused)
+lprocfs_fid_server_seq_show(struct seq_file *m, void *unused)
 {
 	struct lu_client_seq *seq = (struct lu_client_seq *)m->private;
 	struct client_obd *cli;
@@ -204,20 +204,22 @@ ldebugfs_fid_server_seq_show(struct seq_file *m, void *unused)
 	if (seq->lcs_exp != NULL) {
 		cli = &seq->lcs_exp->exp_obd->u.cli;
 		seq_printf(m, "%s\n", cli->cl_target_uuid.uuid);
+	} else {
+		seq_printf(m, "%s\n", seq->lcs_srv->lss_name);
 	}
 
 	return 0;
 }
 
-LPROC_SEQ_FOPS(ldebugfs_fid_space);
-LPROC_SEQ_FOPS(ldebugfs_fid_width);
-LPROC_SEQ_FOPS_RO(ldebugfs_fid_server);
-LPROC_SEQ_FOPS_RO(ldebugfs_fid_fid);
+LPROC_SEQ_FOPS(lprocfs_fid_space);
+LPROC_SEQ_FOPS(lprocfs_fid_width);
+LPROC_SEQ_FOPS_RO(lprocfs_fid_server);
+LPROC_SEQ_FOPS_RO(lprocfs_fid_fid);
 
-struct lprocfs_vars seq_client_debugfs_list[] = {
-	{ "space", &ldebugfs_fid_space_fops },
-	{ "width", &ldebugfs_fid_width_fops },
-	{ "server", &ldebugfs_fid_server_fops },
-	{ "fid", &ldebugfs_fid_fid_fops },
+struct lprocfs_vars seq_client_proc_list[] = {
+	{ "space", &lprocfs_fid_space_fops },
+	{ "width", &lprocfs_fid_width_fops },
+	{ "server", &lprocfs_fid_server_fops },
+	{ "fid", &lprocfs_fid_fid_fops },
 	{ NULL }
 };

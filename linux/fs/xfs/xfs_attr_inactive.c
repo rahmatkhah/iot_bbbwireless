@@ -394,6 +394,7 @@ xfs_attr_inactive(
 {
 	struct xfs_trans	*trans;
 	struct xfs_mount	*mp;
+	int			cancel_flags = 0;
 	int			lock_mode = XFS_ILOCK_SHARED;
 	int			error = 0;
 
@@ -422,6 +423,7 @@ xfs_attr_inactive(
 		goto out_cancel;
 
 	lock_mode = XFS_ILOCK_EXCL;
+	cancel_flags = XFS_TRANS_RELEASE_LOG_RES | XFS_TRANS_ABORT;
 	xfs_ilock(dp, lock_mode);
 
 	if (!XFS_IFORK_Q(dp))
@@ -453,12 +455,12 @@ xfs_attr_inactive(
 	/* Reset the attribute fork - this also destroys the in-core fork */
 	xfs_attr_fork_remove(dp, trans);
 
-	error = xfs_trans_commit(trans);
+	error = xfs_trans_commit(trans, XFS_TRANS_RELEASE_LOG_RES);
 	xfs_iunlock(dp, lock_mode);
 	return error;
 
 out_cancel:
-	xfs_trans_cancel(trans);
+	xfs_trans_cancel(trans, cancel_flags);
 out_destroy_fork:
 	/* kill the in-core attr fork before we drop the inode lock */
 	if (dp->i_afp)

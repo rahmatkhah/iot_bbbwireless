@@ -542,9 +542,9 @@ static int vlan_dev_init(struct net_device *dev)
 					  (1<<__LINK_STATE_DORMANT))) |
 		      (1<<__LINK_STATE_PRESENT);
 
-	dev->hw_features = NETIF_F_HW_CSUM | NETIF_F_SG |
+	dev->hw_features = NETIF_F_ALL_CSUM | NETIF_F_SG |
 			   NETIF_F_FRAGLIST | NETIF_F_GSO_SOFTWARE |
-			   NETIF_F_HIGHDMA | NETIF_F_SCTP_CRC |
+			   NETIF_F_HIGHDMA | NETIF_F_SCTP_CSUM |
 			   NETIF_F_ALL_FCOE;
 
 	dev->features |= real_dev->vlan_features | NETIF_F_LLTX |
@@ -791,9 +791,10 @@ void vlan_setup(struct net_device *dev)
 {
 	ether_setup(dev);
 
-	dev->priv_flags		|= IFF_802_1Q_VLAN | IFF_NO_QUEUE;
+	dev->priv_flags		|= IFF_802_1Q_VLAN;
 	dev->priv_flags		&= ~IFF_TX_SKB_SHARING;
 	netif_keep_dst(dev);
+	dev->tx_queue_len	= 0;
 
 	dev->netdev_ops		= &vlan_netdev_ops;
 	dev->destructor		= vlan_dev_free;

@@ -519,7 +519,7 @@ static int wm8510_set_bias_level(struct snd_soc_codec *codec,
 	case SND_SOC_BIAS_STANDBY:
 		power1 |= WM8510_POWER1_BIASEN | WM8510_POWER1_BUFIOEN;
 
-		if (snd_soc_codec_get_bias_level(codec) == SND_SOC_BIAS_OFF) {
+		if (codec->dapm.bias_level == SND_SOC_BIAS_OFF) {
 			regcache_sync(wm8510->regmap);
 
 			/* Initial cap charge at VMID 5k */
@@ -538,6 +538,7 @@ static int wm8510_set_bias_level(struct snd_soc_codec *codec,
 		break;
 	}
 
+	codec->dapm.bias_level = level;
 	return 0;
 }
 
@@ -598,7 +599,6 @@ static const struct of_device_id wm8510_of_match[] = {
 	{ .compatible = "wlf,wm8510" },
 	{ },
 };
-MODULE_DEVICE_TABLE(of, wm8510_of_match);
 
 static const struct regmap_config wm8510_regmap = {
 	.reg_bits = 7,
@@ -644,6 +644,7 @@ static int wm8510_spi_remove(struct spi_device *spi)
 static struct spi_driver wm8510_spi_driver = {
 	.driver = {
 		.name	= "wm8510",
+		.owner	= THIS_MODULE,
 		.of_match_table = wm8510_of_match,
 	},
 	.probe		= wm8510_spi_probe,
@@ -690,6 +691,7 @@ MODULE_DEVICE_TABLE(i2c, wm8510_i2c_id);
 static struct i2c_driver wm8510_i2c_driver = {
 	.driver = {
 		.name = "wm8510",
+		.owner = THIS_MODULE,
 		.of_match_table = wm8510_of_match,
 	},
 	.probe =    wm8510_i2c_probe,

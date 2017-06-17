@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2017 Junjiro R. Okajima
+ * Copyright (C) 2005-2016 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,6 +25,7 @@
 #include <linux/nsproxy.h>
 #include <linux/random.h>
 #include <linux/writeback.h>
+#include "../fs/mount.h"
 #include "aufs.h"
 
 union conv {
@@ -418,7 +419,7 @@ static struct dentry *au_lkup_by_ino(struct path *path, ino_t ino,
 	}
 
 out_name:
-	free_page((unsigned long)arg.name);
+	au_delayed_free_page((unsigned long)arg.name);
 out_file:
 	fput(file);
 out:
@@ -572,7 +573,7 @@ out_relock:
 			dentry = ERR_PTR(-ESTALE);
 		}
 out_pathname:
-	free_page((unsigned long)pathname);
+	au_delayed_free_page((unsigned long)pathname);
 out_h_parent:
 	dput(h_parent);
 out:

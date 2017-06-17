@@ -46,7 +46,6 @@ config OMAP_MBOX_KFIFO_SIZE
 config PCC
 	bool "Platform Communication Channel Driver"
 	depends on ACPI
-	default n
 	help
 	  ACPI 5.0+ spec defines a generic mode of communication
 	  between the OS and a platform such as the BMC. This medium
@@ -55,31 +54,8 @@ config PCC
 	  states). Select this driver if your platform implements the
 	  PCC clients mentioned above.
 
-config ALTERA_MBOX
-	tristate "Altera Mailbox"
-	depends on HAS_IOMEM
-	help
-	  An implementation of the Altera Mailbox soft core. It is used
-	  to send message between processors. Say Y here if you want to use the
-	  Altera mailbox support.
-
-config BCM2835_MBOX
-	tristate "BCM2835 Mailbox"
-	depends on ARCH_BCM2835
-	help
-	  An implementation of the BCM2385 Mailbox.  It is used to invoke
-	  the services of the Videocore. Say Y here if you want to use the
-	  BCM2835 Mailbox.
-
-config STI_MBOX
-	tristate "STI Mailbox framework support"
-	depends on ARCH_STI && OF
-	help
-	  Mailbox implementation for STMicroelectonics family chips with
-	  hardware for interprocessor communication.
-
 config TI_MESSAGE_MANAGER
-	tristate "Texas Instruments Message Manager Driver"
+	bool "Texas Instruments MessageManager Driver"
 	depends on ARCH_KEYSTONE
 	help
 	  An implementation of Message Manager slave driver for Keystone
@@ -89,12 +65,10 @@ config TI_MESSAGE_MANAGER
 	  multiple processors within the SoC. Select this driver if your
 	  platform has support for the hardware block.
 
-
-config MAILBOX_TEST
-	tristate "Mailbox Test Client"
-	depends on OF
+config ALTERA_MBOX
+	tristate "Altera Mailbox"
 	help
-	  Test client to help with testing new Controller driver
-	  implementations.
-
+	  An implementation of the Altera Mailbox soft core. It is used
+	  to send message between processors. Say Y here if you want to use the
+	  Altera mailbox support.
 endif

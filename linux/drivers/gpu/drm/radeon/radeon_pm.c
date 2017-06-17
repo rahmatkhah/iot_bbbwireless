@@ -253,6 +253,7 @@ static void radeon_pm_set_clocks(struct radeon_device *rdev)
 	    (rdev->pm.requested_power_state_index == rdev->pm.current_power_state_index))
 		return;
 
+	mutex_lock(&rdev->ddev->struct_mutex);
 	down_write(&rdev->pm.mclk_lock);
 	mutex_lock(&rdev->ring_lock);
 
@@ -267,6 +268,7 @@ static void radeon_pm_set_clocks(struct radeon_device *rdev)
 			/* needs a GPU reset dont reset here */
 			mutex_unlock(&rdev->ring_lock);
 			up_write(&rdev->pm.mclk_lock);
+			mutex_unlock(&rdev->ddev->struct_mutex);
 			return;
 		}
 	}
@@ -302,6 +304,7 @@ static void radeon_pm_set_clocks(struct radeon_device *rdev)
 
 	mutex_unlock(&rdev->ring_lock);
 	up_write(&rdev->pm.mclk_lock);
+	mutex_unlock(&rdev->ddev->struct_mutex);
 }
 
 static void radeon_pm_print_states(struct radeon_device *rdev)
@@ -1063,6 +1066,7 @@ force:
 		radeon_dpm_print_power_state(rdev, rdev->pm.dpm.requested_ps);
 	}
 
+	mutex_lock(&rdev->ddev->struct_mutex);
 	down_write(&rdev->pm.mclk_lock);
 	mutex_lock(&rdev->ring_lock);
 
@@ -1113,6 +1117,7 @@ force:
 done:
 	mutex_unlock(&rdev->ring_lock);
 	up_write(&rdev->pm.mclk_lock);
+	mutex_unlock(&rdev->ddev->struct_mutex);
 }
 
 void radeon_dpm_enable_uvd(struct radeon_device *rdev, bool enable)
@@ -1542,7 +1547,8 @@ int radeon_pm_late_init(struct radeon_device *rdev)
 				ret = device_create_file(rdev->dev, &dev_attr_power_method);
 				if (ret)
 					DRM_ERROR("failed to create device file for power method\n");
-				rdev->pm.sysfs_initialized = true;
+				if (!ret)
+					rdev->pm.sysfs_initialized = true;
 			}
 
 			mutex_lock(&rdev->pm.mutex);
@@ -1756,11 +1762,7 @@ static bool radeon_pm_in_vbl(struct radeon_device *rdev)
 	 */
 	for (crtc = 0; (crtc < rdev->num_crtc) && in_vbl; crtc++) {
 		if (rdev->pm.active_crtcs & (1 << crtc)) {
-			vbl_status = radeon_get_crtc_scanoutpos(rdev->ddev,
-								crtc,
-								USE_REAL_VBLANKSTART,
-								&vpos, &hpos, NULL, NULL,
-								&rdev->mode_info.crtcs[crtc]->base.hwmode);
+			vbl_status = radeon_get_crtc_scanoutpos(rdev->ddev, crtc, 0, &vpos, &hpos, NULL, NULL);
 			if ((vbl_status & DRM_SCANOUTPOS_VALID) &&
 			    !(vbl_status & DRM_SCANOUTPOS_IN_VBLANK))
 				in_vbl = false;

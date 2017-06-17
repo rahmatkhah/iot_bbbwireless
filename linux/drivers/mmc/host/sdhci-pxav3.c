@@ -135,8 +135,11 @@ static int armada_38x_quirks(struct platform_device *pdev,
 	struct sdhci_pxa *pxa = pltfm_host->priv;
 	struct resource *res;
 
-	host->quirks &= ~SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN;
 	host->quirks |= SDHCI_QUIRK_MISSING_CAPS;
+
+	host->caps = sdhci_readl(host, SDHCI_CAPABILITIES);
+	host->caps1 = sdhci_readl(host, SDHCI_CAPABILITIES_1);
+
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
 					   "conf-sdio3");
 	if (res) {
@@ -150,7 +153,6 @@ static int armada_38x_quirks(struct platform_device *pdev,
 		 * Configuration register, if the adjustment is not done,
 		 * remove them from the capabilities.
 		 */
-		host->caps1 = sdhci_readl(host, SDHCI_CAPABILITIES_1);
 		host->caps1 &= ~(SDHCI_SUPPORT_SDR50 | SDHCI_SUPPORT_DDR50);
 
 		dev_warn(&pdev->dev, "conf-sdio3 register not found: disabling SDR50 and DDR50 modes.\nConsider updating your dtb\n");
@@ -161,7 +163,6 @@ static int armada_38x_quirks(struct platform_device *pdev,
 	 * controller has different capabilities than the ones shown
 	 * in its registers
 	 */
-	host->caps = sdhci_readl(host, SDHCI_CAPABILITIES);
 	if (of_property_read_bool(np, "no-1-8-v")) {
 		host->caps &= ~SDHCI_CAN_VDD_180;
 		host->mmc->caps &= ~MMC_CAP_1_8V_DDR;
@@ -291,9 +292,6 @@ static void pxav3_set_uhs_signaling(struct sdhci_host *host, unsigned int uhs)
 		    uhs == MMC_TIMING_UHS_DDR50) {
 			reg_val &= ~SDIO3_CONF_CLK_INV;
 			reg_val |= SDIO3_CONF_SD_FB_CLK;
-		} else if (uhs == MMC_TIMING_MMC_HS) {
-			reg_val &= ~SDIO3_CONF_CLK_INV;
-			reg_val &= ~SDIO3_CONF_SD_FB_CLK;
 		} else {
 			reg_val |= SDIO3_CONF_CLK_INV;
 			reg_val &= ~SDIO3_CONF_SD_FB_CLK;
@@ -402,7 +400,7 @@ static int sdhci_pxav3_probe(struct platform_device *pdev)
 	if (of_device_is_compatible(np, "marvell,armada-380-sdhci")) {
 		ret = armada_38x_quirks(pdev, host);
 		if (ret < 0)
-			goto err_mbus_win;
+			goto err_clk_get;
 		ret = mv_conf_mbus_windows(pdev, mv_mbus_dram_info());
 		if (ret < 0)
 			goto err_mbus_win;
@@ -462,8 +460,12 @@ static int sdhci_pxav3_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, host);
 
-	if (host->mmc->pm_caps & MMC_PM_WAKE_SDIO_IRQ)
+	if (host->mmc->pm_caps & MMC_PM_KEEP_POWER) {
 		device_init_wakeup(&pdev->dev, 1);
+		host->mmc->pm_flags |= MMC_PM_WAKE_SDIO_IRQ;
+	} else {
+		device_init_wakeup(&pdev->dev, 0);
+	}
 
 	pm_runtime_put_autosuspend(&pdev->dev);
 
@@ -579,7 +581,9 @@ static const struct dev_pm_ops sdhci_pxav3_pmops = {
 static struct platform_driver sdhci_pxav3_driver = {
 	.driver		= {
 		.name	= "sdhci-pxav3",
-		.of_match_table = of_match_ptr(sdhci_pxav3_of_match),
+#ifdef CONFIG_OF
+		.of_match_table = sdhci_pxav3_of_match,
+#endif
 		.pm	= SDHCI_PXAV3_PMOPS,
 	},
 	.probe		= sdhci_pxav3_probe,

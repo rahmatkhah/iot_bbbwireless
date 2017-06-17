@@ -82,15 +82,31 @@ static inline struct cfs_overlay_item *to_cfs_overlay_item(
 	return item ? container_of(item, struct cfs_overlay_item, item) : NULL;
 }
 
-static ssize_t cfs_overlay_item_path_show(struct config_item *item, char *page)
+CONFIGFS_ATTR_STRUCT(cfs_overlay_item);
+#define CFS_OVERLAY_ITEM_ATTR(_name, _mode, _show, _store)	\
+struct cfs_overlay_item_attribute cfs_overlay_item_attr_##_name = \
+	__CONFIGFS_ATTR(_name, _mode, _show, _store)
+#define CFS_OVERLAY_ITEM_ATTR_RO(_name, _show)	\
+struct cfs_overlay_item_attribute cfs_overlay_item_attr_##_name = \
+	__CONFIGFS_ATTR_RO(_name, _show)
+
+CONFIGFS_BIN_ATTR_STRUCT(cfs_overlay_item);
+#define CFS_OVERLAY_ITEM_BIN_ATTR(_name, _mode, _read, _write, _priv, _max) \
+struct cfs_overlay_item_bin_attribute cfs_overlay_item_bin_attr_##_name = \
+	__CONFIGFS_BIN_ATTR(_name, _mode, _read, _write, _priv, _max)
+#define CFS_OVERLAY_ITEM_BIN_ATTR_RO(_name, _read, _priv, _max)	\
+struct cfs_overlay_item_bin_attribute cfs_overlay_item_bin_attr_##_name = \
+	__CONFIGFS_BIN_ATTR_RO(_name, _read, _priv, _max)
+
+static ssize_t cfs_overlay_item_path_show(struct cfs_overlay_item *overlay,
+		char *page)
 {
-	return sprintf(page, "%s\n", to_cfs_overlay_item(item)->path);
+	return sprintf(page, "%s\n", overlay->path);
 }
 
-static ssize_t cfs_overlay_item_path_store(struct config_item *item,
+static ssize_t cfs_overlay_item_path_store(struct cfs_overlay_item *overlay,
 		const char *page, size_t count)
 {
-	struct cfs_overlay_item *overlay = to_cfs_overlay_item(item);
 	const char *p = page;
 	char *s;
 	int err;
@@ -129,27 +145,26 @@ out_err:
 	return err;
 }
 
-static ssize_t cfs_overlay_item_status_show(struct config_item *item,
+static ssize_t cfs_overlay_item_status_show(struct cfs_overlay_item *overlay,
 		char *page)
 {
-	return sprintf(page, "%s\n", to_cfs_overlay_item(item)->ov_id >= 0 ?
-					"applied" : "unapplied");
+	return sprintf(page, "%s\n",
+			overlay->ov_id >= 0 ? "applied" : "unapplied");
 }
 
-CONFIGFS_ATTR(cfs_overlay_item_, path);
-CONFIGFS_ATTR_RO(cfs_overlay_item_, status);
+CFS_OVERLAY_ITEM_ATTR(path, S_IRUGO | S_IWUSR,
+		cfs_overlay_item_path_show, cfs_overlay_item_path_store);
+CFS_OVERLAY_ITEM_ATTR_RO(status, cfs_overlay_item_status_show);
 
 static struct configfs_attribute *cfs_overlay_attrs[] = {
-	&cfs_overlay_item_attr_path,
-	&cfs_overlay_item_attr_status,
+	&cfs_overlay_item_attr_path.attr,
+	&cfs_overlay_item_attr_status.attr,
 	NULL,
 };
 
-ssize_t cfs_overlay_item_dtbo_read(struct config_item *item, void *buf,
-		size_t max_count)
+ssize_t cfs_overlay_item_dtbo_read(struct cfs_overlay_item *overlay,
+		void *buf, size_t max_count)
 {
-	struct cfs_overlay_item *overlay = to_cfs_overlay_item(item);
-
 	pr_debug("%s: buf=%p max_count=%u\n", __func__,
 			buf, max_count);
 
@@ -168,10 +183,9 @@ ssize_t cfs_overlay_item_dtbo_read(struct config_item *item, void *buf,
 	return overlay->dtbo_size;
 }
 
-ssize_t cfs_overlay_item_dtbo_write(struct config_item *item, const void *buf,
-		size_t count)
+ssize_t cfs_overlay_item_dtbo_write(struct cfs_overlay_item *overlay,
+		const void *buf, size_t count)
 {
-	struct cfs_overlay_item *overlay = to_cfs_overlay_item(item);
 	int err;
 
 	/* if it's set do not allow changes */
@@ -199,10 +213,12 @@ out_err:
 	return err;
 }
 
-CONFIGFS_BIN_ATTR(cfs_overlay_item_, dtbo, NULL, SZ_1M);
+CFS_OVERLAY_ITEM_BIN_ATTR(dtbo, S_IRUGO | S_IWUSR,
+		cfs_overlay_item_dtbo_read, cfs_overlay_item_dtbo_write,
+		NULL, SZ_1M);
 
 static struct configfs_bin_attribute *cfs_overlay_bin_attrs[] = {
-	&cfs_overlay_item_attr_dtbo,
+	&cfs_overlay_item_bin_attr_dtbo.bin_attr,
 	NULL,
 };
 
@@ -219,8 +235,14 @@ static void cfs_overlay_release(struct config_item *item)
 	kfree(overlay);
 }
 
+CONFIGFS_ATTR_OPS(cfs_overlay_item);
+CONFIGFS_BIN_ATTR_OPS(cfs_overlay_item);
 static struct configfs_item_operations cfs_overlay_item_ops = {
 	.release		= cfs_overlay_release,
+	.show_attribute		= cfs_overlay_item_attr_show,
+	.store_attribute	= cfs_overlay_item_attr_store,
+	.read_bin_attribute	= cfs_overlay_item_bin_attr_read,
+	.write_bin_attribute	= cfs_overlay_item_bin_attr_write,
 };
 
 static struct config_item_type cfs_overlay_type = {

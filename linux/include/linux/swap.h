@@ -268,7 +268,6 @@ static inline void workingset_node_pages_inc(struct radix_tree_node *node)
 
 static inline void workingset_node_pages_dec(struct radix_tree_node *node)
 {
-	VM_WARN_ON_ONCE(!workingset_node_pages(node));
 	node->count--;
 }
 
@@ -284,7 +283,6 @@ static inline void workingset_node_shadows_inc(struct radix_tree_node *node)
 
 static inline void workingset_node_shadows_dec(struct radix_tree_node *node)
 {
-	VM_WARN_ON_ONCE(!workingset_node_shadows(node));
 	node->count -= 1U << RADIX_TREE_COUNT_SHIFT;
 }
 
@@ -356,15 +354,7 @@ extern void check_move_unevictable_pages(struct page **, int nr_pages);
 extern int kswapd_run(int nid);
 extern void kswapd_stop(int nid);
 #ifdef CONFIG_MEMCG
-static inline int mem_cgroup_swappiness(struct mem_cgroup *memcg)
-{
-	/* root ? */
-	if (mem_cgroup_disabled() || !memcg->css.parent)
-		return vm_swappiness;
-
-	return memcg->swappiness;
-}
-
+extern int mem_cgroup_swappiness(struct mem_cgroup *mem);
 #else
 static inline int mem_cgroup_swappiness(struct mem_cgroup *mem)
 {
@@ -386,10 +376,11 @@ static inline void mem_cgroup_uncharge_swap(swp_entry_t entry)
 /* linux/mm/page_io.c */
 extern int swap_readpage(struct page *);
 extern int swap_writepage(struct page *page, struct writeback_control *wbc);
-extern void end_swap_bio_write(struct bio *bio);
+extern void end_swap_bio_write(struct bio *bio, int err);
 extern int __swap_writepage(struct page *page, struct writeback_control *wbc,
-	bio_end_io_t end_write_func);
+	void (*end_write_func)(struct bio *, int));
 extern int swap_set_page_dirty(struct page *page);
+extern void end_swap_bio_read(struct bio *bio, int err);
 
 int add_swap_extent(struct swap_info_struct *sis, unsigned long start_page,
 		unsigned long nr_pages, sector_t start_block);
@@ -411,9 +402,6 @@ extern void free_pages_and_swap_cache(struct page **, int);
 extern struct page *lookup_swap_cache(swp_entry_t);
 extern struct page *read_swap_cache_async(swp_entry_t, gfp_t,
 			struct vm_area_struct *vma, unsigned long addr);
-extern struct page *__read_swap_cache_async(swp_entry_t, gfp_t,
-			struct vm_area_struct *vma, unsigned long addr,
-			bool *new_page_allocated);
 extern struct page *swapin_readahead(swp_entry_t, gfp_t,
 			struct vm_area_struct *vma, unsigned long addr);
 
@@ -447,7 +435,6 @@ extern unsigned int count_swap_pages(int, int);
 extern sector_t map_swap_page(struct page *, struct block_device **);
 extern sector_t swapdev_block(int, pgoff_t);
 extern int page_swapcount(struct page *);
-extern int swp_swapcount(swp_entry_t entry);
 extern struct swap_info_struct *page_swap_info(struct page *);
 extern int reuse_swap_page(struct page *);
 extern int try_to_free_swap(struct page *);
@@ -535,11 +522,6 @@ static inline void delete_from_swap_cache(struct page *page)
 }
 
 static inline int page_swapcount(struct page *page)
-{
-	return 0;
-}
-
-static inline int swp_swapcount(swp_entry_t entry)
 {
 	return 0;
 }

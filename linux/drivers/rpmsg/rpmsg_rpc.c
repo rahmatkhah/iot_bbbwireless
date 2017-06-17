@@ -1,7 +1,7 @@
 /*
  * Remote Processor Procedure Call Driver
  *
- * Copyright (C) 2012-2016 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright(c) 2012-2015 Texas Instruments. All rights reserved.
  *
  * Erik Rainey <erik.rainey@ti.com>
  * Suman Anna <s-anna@ti.com>
@@ -395,7 +395,7 @@ static void rppc_disconnect(struct rppc_instance *rpc)
 		return;
 
 	hdr->msg_type = RPPC_MSGTYPE_DELETE_REQ;
-	hdr->msg_len = sizeof(u32);
+	hdr->msg_len = sizeof(uint32_t);
 	handle->endpoint_address = rpc->dst;
 	handle->status = 0;
 	len = sizeof(struct rppc_msg_header) + hdr->msg_len;
@@ -803,8 +803,8 @@ static ssize_t rppc_write(struct file *filp, const char __user *ubuf,
 	struct rppc_param_data *parameters = NULL;
 	char kbuf[512];
 	int use = 0, ret = 0, param = 0;
-	u32 sig_idx = 0;
-	u32 sig_prm = 0;
+	uint32_t sig_idx = 0;
+	uint32_t sig_prm = 0;
 	static u32 rppc_atomic_size[RPPC_PARAM_ATOMIC_MAX] = {
 		0, /* RPPC_PARAM_VOID */
 		1, /* RPPC_PARAM_S08 */
@@ -897,7 +897,7 @@ static ssize_t rppc_write(struct file *filp, const char __user *ubuf,
 				ret = -EINVAL;
 				goto failure;
 			} else {
-				u32 t = rppcdev->signatures[sig_idx].
+				uint32_t t = rppcdev->signatures[sig_idx].
 							params[sig_prm].type;
 				if (rppc_atomic_size[t] !=
 					function->params[param].size) {
@@ -1360,6 +1360,7 @@ static struct rpmsg_device_id rppc_id_table[] = {
 
 static struct rpmsg_driver rppc_driver = {
 	.drv.name = KBUILD_MODNAME,
+	.drv.owner = THIS_MODULE,
 	.id_table = rppc_id_table,
 	.probe = rppc_probe,
 	.remove = rppc_remove,

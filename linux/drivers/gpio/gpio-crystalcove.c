@@ -16,7 +16,6 @@
  */
 
 #include <linux/interrupt.h>
-#include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/gpio.h>
 #include <linux/seq_file.h>
@@ -95,8 +94,9 @@ static inline int to_reg(int gpio, enum ctrl_register reg_type)
 {
 	int reg;
 
-	if (gpio == 94)
+	if (gpio == 94) {
 		return GPIOPANELCTL;
+	}
 
 	if (reg_type == CTRL_IN) {
 		if (gpio < 8)

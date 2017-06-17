@@ -25,7 +25,7 @@
 #include <linux/ratelimit.h>
 #include <linux/crc-t10dif.h>
 #include <asm/unaligned.h>
-#include <scsi/scsi_proto.h>
+#include <scsi/scsi.h>
 #include <scsi/scsi_tcq.h>
 
 #include <target/target_core_base.h>
@@ -38,7 +38,6 @@
 
 static sense_reason_t
 sbc_check_prot(struct se_device *, struct se_cmd *, unsigned char *, u32, bool);
-static sense_reason_t sbc_execute_unmap(struct se_cmd *cmd);
 
 static sense_reason_t
 sbc_emulate_readcapacity(struct se_cmd *cmd)
@@ -154,38 +153,6 @@ sbc_emulate_readcapacity_16(struct se_cmd *cmd)
 	return 0;
 }
 
-static sense_reason_t
-sbc_emulate_startstop(struct se_cmd *cmd)
-{
-	unsigned char *cdb = cmd->t_task_cdb;
-
-	/*
-	 * See sbc3r36 section 5.25
-	 * Immediate bit should be set since there is nothing to complete
-	 * POWER CONDITION MODIFIER 0h
-	 */
-	if (!(cdb[1] & 1) || cdb[2] || cdb[3])
-		return TCM_INVALID_CDB_FIELD;
-
-	/*
-	 * See sbc3r36 section 5.25
-	 * POWER CONDITION 0h START_VALID - process START and LOEJ
-	 */
-	if (cdb[4] >> 4 & 0xf)
-		return TCM_INVALID_CDB_FIELD;
-
-	/*
-	 * See sbc3r36 section 5.25
-	 * LOEJ 0h - nothing to load or unload
-	 * START 1h - we are ready
-	 */
-	if (!(cdb[4] & 1) || (cdb[4] & 2) || (cdb[4] & 4))
-		return TCM_INVALID_CDB_FIELD;
-
-	target_complete_cmd(cmd, SAM_STAT_GOOD);
-	return 0;
-}
-
 sector_t sbc_get_write_same_sectors(struct se_cmd *cmd)
 {
 	u32 num_blocks;
@@ -208,23 +175,6 @@ sector_t sbc_get_write_same_sectors(struct se_cmd *cmd)
 		cmd->t_task_lba + 1;
 }
 EXPORT_SYMBOL(sbc_get_write_same_sectors);
-
-static sense_reason_t
-sbc_execute_write_same_unmap(struct se_cmd *cmd)
-{
-	struct sbc_ops *ops = cmd->protocol_data;
-	sector_t nolb = sbc_get_write_same_sectors(cmd);
-	sense_reason_t ret;
-
-	if (nolb) {
-		ret = ops->execute_unmap(cmd, cmd->t_task_lba, nolb);
-		if (ret)
-			return ret;
-	}
-
-	target_complete_cmd(cmd, GOOD);
-	return 0;
-}
 
 static sense_reason_t
 sbc_emulate_noop(struct se_cmd *cmd)
@@ -349,7 +299,7 @@ sbc_setup_write_same(struct se_cmd *cmd, unsigned char *flags, struct sbc_ops *o
 	 * translated into block discard requests within backend code.
 	 */
 	if (flags[0] & 0x08) {
-		if (!ops->execute_unmap)
+		if (!ops->execute_write_same_unmap)
 			return TCM_UNSUPPORTED_SCSI_OPCODE;
 
 		if (!dev->dev_attrib.emulate_tpws) {
@@ -357,7 +307,7 @@ sbc_setup_write_same(struct se_cmd *cmd, unsigned char *flags, struct sbc_ops *o
 			       " has emulate_tpws disabled\n");
 			return TCM_UNSUPPORTED_SCSI_OPCODE;
 		}
-		cmd->execute_cmd = sbc_execute_write_same_unmap;
+		cmd->execute_cmd = ops->execute_write_same_unmap;
 		return 0;
 	}
 	if (!ops->execute_write_same)
@@ -432,9 +382,7 @@ out:
 static sense_reason_t
 sbc_execute_rw(struct se_cmd *cmd)
 {
-	struct sbc_ops *ops = cmd->protocol_data;
-
-	return ops->execute_rw(cmd, cmd->t_data_sg, cmd->t_data_nents,
+	return cmd->execute_rw(cmd, cmd->t_data_sg, cmd->t_data_nents,
 			       cmd->data_direction);
 }
 
@@ -442,7 +390,6 @@ static sense_reason_t compare_and_write_post(struct se_cmd *cmd, bool success,
 					     int *post_ret)
 {
 	struct se_device *dev = cmd->se_dev;
-	sense_reason_t ret = TCM_NO_SENSE;
 
 	/*
 	 * Only set SCF_COMPARE_AND_WRITE_POST to force a response fall-through
@@ -450,12 +397,9 @@ static sense_reason_t compare_and_write_post(struct se_cmd *cmd, bool success,
 	 * sent to the backend driver.
 	 */
 	spin_lock_irq(&cmd->t_state_lock);
-	if (cmd->transport_state & CMD_T_SENT) {
+	if ((cmd->transport_state & CMD_T_SENT) && !cmd->scsi_status) {
 		cmd->se_cmd_flags |= SCF_COMPARE_AND_WRITE_POST;
 		*post_ret = 1;
-
-		if (cmd->scsi_status == SAM_STAT_CHECK_CONDITION)
-			ret = TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
 	}
 	spin_unlock_irq(&cmd->t_state_lock);
 
@@ -465,7 +409,7 @@ static sense_reason_t compare_and_write_post(struct se_cmd *cmd, bool success,
 	 */
 	up(&dev->caw_sem);
 
-	return ret;
+	return TCM_NO_SENSE;
 }
 
 static sense_reason_t compare_and_write_callback(struct se_cmd *cmd, bool success,
@@ -598,7 +542,7 @@ static sense_reason_t compare_and_write_callback(struct se_cmd *cmd, bool succes
 	cmd->transport_state |= CMD_T_ACTIVE|CMD_T_BUSY|CMD_T_SENT;
 	spin_unlock_irq(&cmd->t_state_lock);
 
-	__target_execute_cmd(cmd, false);
+	__target_execute_cmd(cmd);
 
 	kfree(buf);
 	return ret;
@@ -621,7 +565,6 @@ out:
 static sense_reason_t
 sbc_compare_and_write(struct se_cmd *cmd)
 {
-	struct sbc_ops *ops = cmd->protocol_data;
 	struct se_device *dev = cmd->se_dev;
 	sense_reason_t ret;
 	int rc;
@@ -641,7 +584,7 @@ sbc_compare_and_write(struct se_cmd *cmd)
 	 */
 	cmd->data_length = cmd->t_task_nolb * dev->dev_attrib.block_size;
 
-	ret = ops->execute_rw(cmd, cmd->t_bidi_data_sg, cmd->t_bidi_data_nents,
+	ret = cmd->execute_rw(cmd, cmd->t_bidi_data_sg, cmd->t_bidi_data_nents,
 			      DMA_FROM_DEVICE);
 	if (ret) {
 		cmd->transport_complete_callback = NULL;
@@ -800,15 +743,14 @@ static int
 sbc_check_dpofua(struct se_device *dev, struct se_cmd *cmd, unsigned char *cdb)
 {
 	if (cdb[1] & 0x10) {
-		/* see explanation in spc_emulate_modesense */
-		if (!target_check_fua(dev)) {
+		if (!dev->dev_attrib.emulate_dpo) {
 			pr_err("Got CDB: 0x%02x with DPO bit set, but device"
 			       " does not advertise support for DPO\n", cdb[0]);
 			return -EINVAL;
 		}
 	}
 	if (cdb[1] & 0x8) {
-		if (!target_check_fua(dev)) {
+		if (!dev->dev_attrib.emulate_fua_write || !se_dev_check_wce(dev)) {
 			pr_err("Got CDB: 0x%02x with FUA bit set, but device"
 			       " does not advertise support for FUA write\n",
 			       cdb[0]);
@@ -828,13 +770,12 @@ sbc_parse_cdb(struct se_cmd *cmd, struct sbc_ops *ops)
 	u32 sectors = 0;
 	sense_reason_t ret;
 
-	cmd->protocol_data = ops;
-
 	switch (cdb[0]) {
 	case READ_6:
 		sectors = transport_get_sectors_6(cdb);
 		cmd->t_task_lba = transport_lba_21(cdb);
 		cmd->se_cmd_flags |= SCF_SCSI_DATA_CDB;
+		cmd->execute_rw = ops->execute_rw;
 		cmd->execute_cmd = sbc_execute_rw;
 		break;
 	case READ_10:
@@ -849,6 +790,7 @@ sbc_parse_cdb(struct se_cmd *cmd, struct sbc_ops *ops)
 			return ret;
 
 		cmd->se_cmd_flags |= SCF_SCSI_DATA_CDB;
+		cmd->execute_rw = ops->execute_rw;
 		cmd->execute_cmd = sbc_execute_rw;
 		break;
 	case READ_12:
@@ -863,6 +805,7 @@ sbc_parse_cdb(struct se_cmd *cmd, struct sbc_ops *ops)
 			return ret;
 
 		cmd->se_cmd_flags |= SCF_SCSI_DATA_CDB;
+		cmd->execute_rw = ops->execute_rw;
 		cmd->execute_cmd = sbc_execute_rw;
 		break;
 	case READ_16:
@@ -877,12 +820,14 @@ sbc_parse_cdb(struct se_cmd *cmd, struct sbc_ops *ops)
 			return ret;
 
 		cmd->se_cmd_flags |= SCF_SCSI_DATA_CDB;
+		cmd->execute_rw = ops->execute_rw;
 		cmd->execute_cmd = sbc_execute_rw;
 		break;
 	case WRITE_6:
 		sectors = transport_get_sectors_6(cdb);
 		cmd->t_task_lba = transport_lba_21(cdb);
 		cmd->se_cmd_flags |= SCF_SCSI_DATA_CDB;
+		cmd->execute_rw = ops->execute_rw;
 		cmd->execute_cmd = sbc_execute_rw;
 		break;
 	case WRITE_10:
@@ -898,6 +843,7 @@ sbc_parse_cdb(struct se_cmd *cmd, struct sbc_ops *ops)
 			return ret;
 
 		cmd->se_cmd_flags |= SCF_SCSI_DATA_CDB;
+		cmd->execute_rw = ops->execute_rw;
 		cmd->execute_cmd = sbc_execute_rw;
 		break;
 	case WRITE_12:
@@ -912,6 +858,7 @@ sbc_parse_cdb(struct se_cmd *cmd, struct sbc_ops *ops)
 			return ret;
 
 		cmd->se_cmd_flags |= SCF_SCSI_DATA_CDB;
+		cmd->execute_rw = ops->execute_rw;
 		cmd->execute_cmd = sbc_execute_rw;
 		break;
 	case WRITE_16:
@@ -926,6 +873,7 @@ sbc_parse_cdb(struct se_cmd *cmd, struct sbc_ops *ops)
 			return ret;
 
 		cmd->se_cmd_flags |= SCF_SCSI_DATA_CDB;
+		cmd->execute_rw = ops->execute_rw;
 		cmd->execute_cmd = sbc_execute_rw;
 		break;
 	case XDWRITEREAD_10:
@@ -943,6 +891,7 @@ sbc_parse_cdb(struct se_cmd *cmd, struct sbc_ops *ops)
 		/*
 		 * Setup BIDI XOR callback to be run after I/O completion.
 		 */
+		cmd->execute_rw = ops->execute_rw;
 		cmd->execute_cmd = sbc_execute_rw;
 		cmd->transport_complete_callback = &xdreadwrite_callback;
 		break;
@@ -966,6 +915,7 @@ sbc_parse_cdb(struct se_cmd *cmd, struct sbc_ops *ops)
 			 * Setup BIDI XOR callback to be run during after I/O
 			 * completion.
 			 */
+			cmd->execute_rw = ops->execute_rw;
 			cmd->execute_cmd = sbc_execute_rw;
 			cmd->transport_complete_callback = &xdreadwrite_callback;
 			break;
@@ -1001,9 +951,6 @@ sbc_parse_cdb(struct se_cmd *cmd, struct sbc_ops *ops)
 			       " than 1\n", sectors);
 			return TCM_INVALID_CDB_FIELD;
 		}
-		if (sbc_check_dpofua(dev, cmd, cdb))
-			return TCM_INVALID_CDB_FIELD;
-
 		/*
 		 * Double size because we have two buffers, note that
 		 * zero is not an error..
@@ -1012,6 +959,7 @@ sbc_parse_cdb(struct se_cmd *cmd, struct sbc_ops *ops)
 		cmd->t_task_lba = get_unaligned_be64(&cdb[2]);
 		cmd->t_task_nolb = sectors;
 		cmd->se_cmd_flags |= SCF_SCSI_DATA_CDB | SCF_COMPARE_AND_WRITE;
+		cmd->execute_rw = ops->execute_rw;
 		cmd->execute_cmd = sbc_compare_and_write;
 		cmd->transport_complete_callback = compare_and_write_callback;
 		break;
@@ -1061,7 +1009,7 @@ sbc_parse_cdb(struct se_cmd *cmd, struct sbc_ops *ops)
 			return TCM_UNSUPPORTED_SCSI_OPCODE;
 		}
 		size = get_unaligned_be16(&cdb[7]);
-		cmd->execute_cmd = sbc_execute_unmap;
+		cmd->execute_cmd = ops->execute_unmap;
 		break;
 	case WRITE_SAME_16:
 		sectors = transport_get_sectors_16(cdb);
@@ -1096,15 +1044,9 @@ sbc_parse_cdb(struct se_cmd *cmd, struct sbc_ops *ops)
 			return ret;
 		break;
 	case VERIFY:
-	case VERIFY_16:
 		size = 0;
-		if (cdb[0] == VERIFY) {
-			sectors = transport_get_sectors_10(cdb);
-			cmd->t_task_lba = transport_lba_32(cdb);
-		} else {
-			sectors = transport_get_sectors_16(cdb);
-			cmd->t_task_lba = transport_lba_64(cdb);
-		}
+		sectors = transport_get_sectors_10(cdb);
+		cmd->t_task_lba = transport_lba_32(cdb);
 		cmd->execute_cmd = sbc_emulate_noop;
 		goto check_lba;
 	case REZERO_UNIT:
@@ -1118,10 +1060,6 @@ sbc_parse_cdb(struct se_cmd *cmd, struct sbc_ops *ops)
 		 */
 		size = 0;
 		cmd->execute_cmd = sbc_emulate_noop;
-		break;
-	case START_STOP:
-		size = 0;
-		cmd->execute_cmd = sbc_emulate_startstop;
 		break;
 	default:
 		ret = spc_parse_cdb(cmd, &size);
@@ -1159,10 +1097,12 @@ u32 sbc_get_device_type(struct se_device *dev)
 }
 EXPORT_SYMBOL(sbc_get_device_type);
 
-static sense_reason_t
-sbc_execute_unmap(struct se_cmd *cmd)
+sense_reason_t
+sbc_execute_unmap(struct se_cmd *cmd,
+	sense_reason_t (*do_unmap_fn)(struct se_cmd *, void *,
+				      sector_t, sector_t),
+	void *priv)
 {
-	struct sbc_ops *ops = cmd->protocol_data;
 	struct se_device *dev = cmd->se_dev;
 	unsigned char *buf, *ptr = NULL;
 	sector_t lba;
@@ -1226,7 +1166,7 @@ sbc_execute_unmap(struct se_cmd *cmd)
 			goto err;
 		}
 
-		ret = ops->execute_unmap(cmd, lba, range);
+		ret = do_unmap_fn(cmd, priv, lba, range);
 		if (ret)
 			goto err;
 
@@ -1240,56 +1180,34 @@ err:
 		target_complete_cmd(cmd, GOOD);
 	return ret;
 }
+EXPORT_SYMBOL(sbc_execute_unmap);
 
 void
 sbc_dif_generate(struct se_cmd *cmd)
 {
 	struct se_device *dev = cmd->se_dev;
-	struct t10_pi_tuple *sdt;
-	struct scatterlist *dsg = cmd->t_data_sg, *psg;
+	struct se_dif_v1_tuple *sdt;
+	struct scatterlist *dsg, *psg = cmd->t_prot_sg;
 	sector_t sector = cmd->t_task_lba;
 	void *daddr, *paddr;
 	int i, j, offset = 0;
-	unsigned int block_size = dev->dev_attrib.block_size;
 
-	for_each_sg(cmd->t_prot_sg, psg, cmd->t_prot_nents, i) {
-		paddr = kmap_atomic(sg_page(psg)) + psg->offset;
+	for_each_sg(cmd->t_data_sg, dsg, cmd->t_data_nents, i) {
 		daddr = kmap_atomic(sg_page(dsg)) + dsg->offset;
+		paddr = kmap_atomic(sg_page(psg)) + psg->offset;
 
-		for (j = 0; j < psg->length;
-				j += sizeof(*sdt)) {
-			__u16 crc;
-			unsigned int avail;
+		for (j = 0; j < dsg->length; j += dev->dev_attrib.block_size) {
 
-			if (offset >= dsg->length) {
-				offset -= dsg->length;
-				kunmap_atomic(daddr - dsg->offset);
-				dsg = sg_next(dsg);
-				if (!dsg) {
-					kunmap_atomic(paddr - psg->offset);
-					return;
-				}
-				daddr = kmap_atomic(sg_page(dsg)) + dsg->offset;
+			if (offset >= psg->length) {
+				kunmap_atomic(paddr);
+				psg = sg_next(psg);
+				paddr = kmap_atomic(sg_page(psg)) + psg->offset;
+				offset = 0;
 			}
 
-			sdt = paddr + j;
-			avail = min(block_size, dsg->length - offset);
-			crc = crc_t10dif(daddr + offset, avail);
-			if (avail < block_size) {
-				kunmap_atomic(daddr - dsg->offset);
-				dsg = sg_next(dsg);
-				if (!dsg) {
-					kunmap_atomic(paddr - psg->offset);
-					return;
-				}
-				daddr = kmap_atomic(sg_page(dsg)) + dsg->offset;
-				offset = block_size - avail;
-				crc = crc_t10dif_update(crc, daddr, offset);
-			} else {
-				offset += block_size;
-			}
-
-			sdt->guard_tag = cpu_to_be16(crc);
+			sdt = paddr + offset;
+			sdt->guard_tag = cpu_to_be16(crc_t10dif(daddr + j,
+						dev->dev_attrib.block_size));
 			if (cmd->prot_type == TARGET_DIF_TYPE1_PROT)
 				sdt->ref_tag = cpu_to_be32(sector & 0xffffffff);
 			sdt->app_tag = 0;
@@ -1302,23 +1220,26 @@ sbc_dif_generate(struct se_cmd *cmd)
 				 be32_to_cpu(sdt->ref_tag));
 
 			sector++;
+			offset += sizeof(struct se_dif_v1_tuple);
 		}
 
-		kunmap_atomic(daddr - dsg->offset);
-		kunmap_atomic(paddr - psg->offset);
+		kunmap_atomic(paddr);
+		kunmap_atomic(daddr);
 	}
 }
 
 static sense_reason_t
-sbc_dif_v1_verify(struct se_cmd *cmd, struct t10_pi_tuple *sdt,
-		  __u16 crc, sector_t sector, unsigned int ei_lba)
+sbc_dif_v1_verify(struct se_cmd *cmd, struct se_dif_v1_tuple *sdt,
+		  const void *p, sector_t sector, unsigned int ei_lba)
 {
+	struct se_device *dev = cmd->se_dev;
+	int block_size = dev->dev_attrib.block_size;
 	__be16 csum;
 
 	if (!(cmd->prot_checks & TARGET_DIF_CHECK_GUARD))
 		goto check_ref;
 
-	csum = cpu_to_be16(crc);
+	csum = cpu_to_be16(crc_t10dif(p, block_size));
 
 	if (sdt->guard_tag != csum) {
 		pr_err("DIFv1 checksum failed on sector %llu guard tag 0x%04x"
@@ -1350,8 +1271,9 @@ check_ref:
 	return 0;
 }
 
-void sbc_dif_copy_prot(struct se_cmd *cmd, unsigned int sectors, bool read,
-		       struct scatterlist *sg, int sg_off)
+static void
+sbc_dif_copy_prot(struct se_cmd *cmd, unsigned int sectors, bool read,
+		  struct scatterlist *sg, int sg_off)
 {
 	struct se_device *dev = cmd->se_dev;
 	struct scatterlist *psg;
@@ -1383,54 +1305,100 @@ void sbc_dif_copy_prot(struct se_cmd *cmd, unsigned int sectors, bool read,
 			copied += len;
 			psg_len -= len;
 
-			kunmap_atomic(addr - sg->offset - offset);
-
 			if (offset >= sg->length) {
 				sg = sg_next(sg);
 				offset = 0;
 			}
+			kunmap_atomic(addr);
 		}
-		kunmap_atomic(paddr - psg->offset);
+		kunmap_atomic(paddr);
 	}
 }
-EXPORT_SYMBOL(sbc_dif_copy_prot);
 
 sense_reason_t
-sbc_dif_verify(struct se_cmd *cmd, sector_t start, unsigned int sectors,
-	       unsigned int ei_lba, struct scatterlist *psg, int psg_off)
+sbc_dif_verify_write(struct se_cmd *cmd, sector_t start, unsigned int sectors,
+		     unsigned int ei_lba, struct scatterlist *sg, int sg_off)
 {
 	struct se_device *dev = cmd->se_dev;
-	struct t10_pi_tuple *sdt;
-	struct scatterlist *dsg = cmd->t_data_sg;
+	struct se_dif_v1_tuple *sdt;
+	struct scatterlist *dsg, *psg = cmd->t_prot_sg;
 	sector_t sector = start;
 	void *daddr, *paddr;
-	int i;
+	int i, j, offset = 0;
 	sense_reason_t rc;
-	int dsg_off = 0;
-	unsigned int block_size = dev->dev_attrib.block_size;
 
-	for (; psg && sector < start + sectors; psg = sg_next(psg)) {
-		paddr = kmap_atomic(sg_page(psg)) + psg->offset;
+	for_each_sg(cmd->t_data_sg, dsg, cmd->t_data_nents, i) {
 		daddr = kmap_atomic(sg_page(dsg)) + dsg->offset;
+		paddr = kmap_atomic(sg_page(psg)) + psg->offset;
 
-		for (i = psg_off; i < psg->length &&
-				sector < start + sectors;
-				i += sizeof(*sdt)) {
-			__u16 crc;
-			unsigned int avail;
+		for (j = 0; j < dsg->length; j += dev->dev_attrib.block_size) {
 
-			if (dsg_off >= dsg->length) {
-				dsg_off -= dsg->length;
-				kunmap_atomic(daddr - dsg->offset);
-				dsg = sg_next(dsg);
-				if (!dsg) {
-					kunmap_atomic(paddr - psg->offset);
-					return 0;
-				}
-				daddr = kmap_atomic(sg_page(dsg)) + dsg->offset;
+			if (offset >= psg->length) {
+				kunmap_atomic(paddr);
+				psg = sg_next(psg);
+				paddr = kmap_atomic(sg_page(psg)) + psg->offset;
+				offset = 0;
 			}
 
-			sdt = paddr + i;
+			sdt = paddr + offset;
+
+			pr_debug("DIF WRITE sector: %llu guard_tag: 0x%04x"
+				 " app_tag: 0x%04x ref_tag: %u\n",
+				 (unsigned long long)sector, sdt->guard_tag,
+				 sdt->app_tag, be32_to_cpu(sdt->ref_tag));
+
+			rc = sbc_dif_v1_verify(cmd, sdt, daddr + j, sector,
+					       ei_lba);
+			if (rc) {
+				kunmap_atomic(paddr);
+				kunmap_atomic(daddr);
+				cmd->bad_sector = sector;
+				return rc;
+			}
+
+			sector++;
+			ei_lba++;
+			offset += sizeof(struct se_dif_v1_tuple);
+		}
+
+		kunmap_atomic(paddr);
+		kunmap_atomic(daddr);
+	}
+	if (!sg)
+		return 0;
+
+	sbc_dif_copy_prot(cmd, sectors, false, sg, sg_off);
+
+	return 0;
+}
+EXPORT_SYMBOL(sbc_dif_verify_write);
+
+static sense_reason_t
+__sbc_dif_verify_read(struct se_cmd *cmd, sector_t start, unsigned int sectors,
+		      unsigned int ei_lba, struct scatterlist *sg, int sg_off)
+{
+	struct se_device *dev = cmd->se_dev;
+	struct se_dif_v1_tuple *sdt;
+	struct scatterlist *dsg, *psg = sg;
+	sector_t sector = start;
+	void *daddr, *paddr;
+	int i, j, offset = sg_off;
+	sense_reason_t rc;
+
+	for_each_sg(cmd->t_data_sg, dsg, cmd->t_data_nents, i) {
+		daddr = kmap_atomic(sg_page(dsg)) + dsg->offset;
+		paddr = kmap_atomic(sg_page(psg)) + sg->offset;
+
+		for (j = 0; j < dsg->length; j += dev->dev_attrib.block_size) {
+
+			if (offset >= psg->length) {
+				kunmap_atomic(paddr);
+				psg = sg_next(psg);
+				paddr = kmap_atomic(sg_page(psg)) + psg->offset;
+				offset = 0;
+			}
+
+			sdt = paddr + offset;
 
 			pr_debug("DIF READ sector: %llu guard_tag: 0x%04x"
 				 " app_tag: 0x%04x ref_tag: %u\n",
@@ -1438,43 +1406,53 @@ sbc_dif_verify(struct se_cmd *cmd, sector_t start, unsigned int sectors,
 				 sdt->app_tag, be32_to_cpu(sdt->ref_tag));
 
 			if (sdt->app_tag == cpu_to_be16(0xffff)) {
-				dsg_off += block_size;
-				goto next;
+				sector++;
+				offset += sizeof(struct se_dif_v1_tuple);
+				continue;
 			}
 
-			avail = min(block_size, dsg->length - dsg_off);
-			crc = crc_t10dif(daddr + dsg_off, avail);
-			if (avail < block_size) {
-				kunmap_atomic(daddr - dsg->offset);
-				dsg = sg_next(dsg);
-				if (!dsg) {
-					kunmap_atomic(paddr - psg->offset);
-					return 0;
-				}
-				daddr = kmap_atomic(sg_page(dsg)) + dsg->offset;
-				dsg_off = block_size - avail;
-				crc = crc_t10dif_update(crc, daddr, dsg_off);
-			} else {
-				dsg_off += block_size;
-			}
-
-			rc = sbc_dif_v1_verify(cmd, sdt, crc, sector, ei_lba);
+			rc = sbc_dif_v1_verify(cmd, sdt, daddr + j, sector,
+					       ei_lba);
 			if (rc) {
-				kunmap_atomic(daddr - dsg->offset);
-				kunmap_atomic(paddr - psg->offset);
+				kunmap_atomic(paddr);
+				kunmap_atomic(daddr);
 				cmd->bad_sector = sector;
 				return rc;
 			}
-next:
+
 			sector++;
 			ei_lba++;
+			offset += sizeof(struct se_dif_v1_tuple);
 		}
 
-		psg_off = 0;
-		kunmap_atomic(daddr - dsg->offset);
-		kunmap_atomic(paddr - psg->offset);
+		kunmap_atomic(paddr);
+		kunmap_atomic(daddr);
 	}
 
 	return 0;
 }
-EXPORT_SYMBOL(sbc_dif_verify);
+
+sense_reason_t
+sbc_dif_read_strip(struct se_cmd *cmd)
+{
+	struct se_device *dev = cmd->se_dev;
+	u32 sectors = cmd->prot_length / dev->prot_length;
+
+	return __sbc_dif_verify_read(cmd, cmd->t_task_lba, sectors, 0,
+				     cmd->t_prot_sg, 0);
+}
+
+sense_reason_t
+sbc_dif_verify_read(struct se_cmd *cmd, sector_t start, unsigned int sectors,
+		    unsigned int ei_lba, struct scatterlist *sg, int sg_off)
+{
+	sense_reason_t rc;
+
+	rc = __sbc_dif_verify_read(cmd, start, sectors, ei_lba, sg, sg_off);
+	if (rc)
+		return rc;
+
+	sbc_dif_copy_prot(cmd, sectors, true, sg, sg_off);
+	return 0;
+}
+EXPORT_SYMBOL(sbc_dif_verify_read);

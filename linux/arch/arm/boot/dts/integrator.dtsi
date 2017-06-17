@@ -6,7 +6,7 @@
 
 / {
 	core-module@10000000 {
-		compatible = "arm,core-module-integrator", "syscon", "simple-mfd";
+		compatible = "arm,core-module-integrator", "syscon";
 		reg = <0x10000000 0x200>;
 
 		/* Use core module LED to indicate CPU load */
@@ -95,7 +95,7 @@
 
 		syscon {
 			/* Debug registers mapped as syscon */
-			compatible = "syscon", "simple-mfd";
+			compatible = "syscon";
 			reg = <0x1a000000 0x10>;
 
 			led@04.0 {

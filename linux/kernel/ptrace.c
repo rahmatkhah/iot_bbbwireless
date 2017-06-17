@@ -39,9 +39,6 @@ void __ptrace_link(struct task_struct *child, struct task_struct *new_parent)
 	BUG_ON(!list_empty(&child->ptrace_entry));
 	list_add(&child->ptrace_entry, &new_parent->ptraced);
 	child->parent = new_parent;
-	rcu_read_lock();
-	child->ptracer_cred = get_cred(__task_cred(new_parent));
-	rcu_read_unlock();
 }
 
 /**
@@ -74,15 +71,11 @@ void __ptrace_link(struct task_struct *child, struct task_struct *new_parent)
  */
 void __ptrace_unlink(struct task_struct *child)
 {
-	const struct cred *old_cred;
 	BUG_ON(!child->ptrace);
 
 	child->ptrace = 0;
 	child->parent = child->real_parent;
 	list_del_init(&child->ptrace_entry);
-	old_cred = child->ptracer_cred;
-	child->ptracer_cred = NULL;
-	put_cred(old_cred);
 
 	spin_lock(&child->sighand->siglock);
 
@@ -158,17 +151,11 @@ static void ptrace_unfreeze_traced(struct task_struct *task)
 
 	WARN_ON(!task->ptrace || task->parent != current);
 
-	/*
-	 * PTRACE_LISTEN can allow ptrace_trap_notify to wake us up remotely.
-	 * Recheck state under the lock to close this race.
-	 */
 	spin_lock_irq(&task->sighand->siglock);
-	if (task->state == __TASK_TRACED) {
-		if (__fatal_signal_pending(task))
-			wake_up_state(task, __TASK_TRACED);
-		else
-			task->state = TASK_TRACED;
-	}
+	if (__fatal_signal_pending(task))
+		wake_up_state(task, __TASK_TRACED);
+	else
+		task->state = TASK_TRACED;
 	spin_unlock_irq(&task->sighand->siglock);
 }
 
@@ -239,7 +226,7 @@ static int ptrace_has_cap(struct user_namespace *ns, unsigned int mode)
 static int __ptrace_may_access(struct task_struct *task, unsigned int mode)
 {
 	const struct cred *cred = current_cred(), *tcred;
-	struct mm_struct *mm;
+	int dumpable = 0;
 	kuid_t caller_uid;
 	kgid_t caller_gid;
 
@@ -290,11 +277,16 @@ static int __ptrace_may_access(struct task_struct *task, unsigned int mode)
 	return -EPERM;
 ok:
 	rcu_read_unlock();
-	mm = task->mm;
-	if (mm &&
-	    ((get_dumpable(mm) != SUID_DUMP_USER) &&
-	     !ptrace_has_cap(mm->user_ns, mode)))
-	    return -EPERM;
+	smp_rmb();
+	if (task->mm)
+		dumpable = get_dumpable(task->mm);
+	rcu_read_lock();
+	if (dumpable != SUID_DUMP_USER &&
+	    !ptrace_has_cap(__task_cred(task)->user_ns, mode)) {
+		rcu_read_unlock();
+		return -EPERM;
+	}
+	rcu_read_unlock();
 
 	return security_ptrace_access_check(task, mode);
 }
@@ -358,6 +350,10 @@ static int ptrace_attach(struct task_struct *task, long request,
 
 	if (seize)
 		flags |= PT_SEIZED;
+	rcu_read_lock();
+	if (ns_capable(__task_cred(task)->user_ns, CAP_SYS_PTRACE))
+		flags |= PT_PTRACE_CAP;
+	rcu_read_unlock();
 	task->ptrace = flags;
 
 	__ptrace_link(task, current);
@@ -589,19 +585,6 @@ static int ptrace_setoptions(struct task_struct *child, unsigned long data)
 
 	if (data & ~(unsigned long)PTRACE_O_MASK)
 		return -EINVAL;
-
-	if (unlikely(data & PTRACE_O_SUSPEND_SECCOMP)) {
-		if (!config_enabled(CONFIG_CHECKPOINT_RESTORE) ||
-		    !config_enabled(CONFIG_SECCOMP))
-			return -EINVAL;
-
-		if (!capable(CAP_SYS_ADMIN))
-			return -EPERM;
-
-		if (seccomp_mode(&current->seccomp) != SECCOMP_MODE_DISABLED ||
-		    current->ptrace & PT_SUSPEND_SECCOMP)
-			return -EPERM;
-	}
 
 	/* Avoid intermediate state when all opts are cleared */
 	flags = child->ptrace;
@@ -1050,11 +1033,6 @@ int ptrace_request(struct task_struct *child, long request,
 		break;
 	}
 #endif
-
-	case PTRACE_SECCOMP_GET_FILTER:
-		ret = seccomp_get_filter(child, addr, datavp);
-		break;
-
 	default:
 		break;
 	}

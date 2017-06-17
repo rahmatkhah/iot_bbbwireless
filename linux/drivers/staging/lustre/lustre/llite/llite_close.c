@@ -221,7 +221,7 @@ int ll_som_update(struct inode *inode, struct md_op_data *op_data)
 		       inode->i_ino, inode->i_generation,
 		       lli->lli_flags);
 
-	oa = kmem_cache_alloc(obdo_cachep, GFP_NOFS | __GFP_ZERO);
+	OBDO_ALLOC(oa);
 	if (!oa) {
 		CERROR("can't allocate memory for Size-on-MDS update.\n");
 		return -ENOMEM;
@@ -252,7 +252,7 @@ int ll_som_update(struct inode *inode, struct md_op_data *op_data)
 			NULL, 0, NULL, 0, &request, NULL);
 	ptlrpc_req_finished(request);
 
-	kmem_cache_free(obdo_cachep, oa);
+	OBDO_FREE(oa);
 	return rc;
 }
 
@@ -293,18 +293,19 @@ static void ll_done_writing(struct inode *inode)
 		goto out;
 
 	rc = md_done_writing(ll_i2sbi(inode)->ll_md_exp, op_data, NULL);
-	if (rc == -EAGAIN)
+	if (rc == -EAGAIN) {
 		/* MDS has instructed us to obtain Size-on-MDS attribute from
 		 * OSTs and send setattr to back to MDS. */
 		rc = ll_som_update(inode, op_data);
-	else if (rc)
+	} else if (rc) {
 		CERROR("inode %lu mdc done_writing failed: rc = %d\n",
 		       inode->i_ino, rc);
+	}
 out:
 	ll_finish_md_op_data(op_data);
 	if (och) {
 		md_clear_open_replay_data(ll_i2sbi(inode)->ll_md_exp, och);
-		kfree(och);
+		OBD_FREE_PTR(och);
 	}
 }
 
@@ -373,7 +374,7 @@ int ll_close_thread_start(struct ll_close_queue **lcq_ret)
 
 	task = kthread_run(ll_close_thread, lcq, "ll_close");
 	if (IS_ERR(task)) {
-		kfree(lcq);
+		OBD_FREE(lcq, sizeof(*lcq));
 		return PTR_ERR(task);
 	}
 
@@ -388,5 +389,5 @@ void ll_close_thread_shutdown(struct ll_close_queue *lcq)
 	atomic_inc(&lcq->lcq_stop);
 	wake_up(&lcq->lcq_waitq);
 	wait_for_completion(&lcq->lcq_comp);
-	kfree(lcq);
+	OBD_FREE(lcq, sizeof(*lcq));
 }

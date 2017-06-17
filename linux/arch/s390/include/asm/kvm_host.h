@@ -22,7 +22,6 @@
 #include <linux/kvm.h>
 #include <asm/debug.h>
 #include <asm/cpu.h>
-#include <asm/fpu/api.h>
 #include <asm/isc.h>
 
 #define KVM_MAX_VCPUS 64
@@ -35,7 +34,6 @@
  */
 #define KVM_NR_IRQCHIPS 1
 #define KVM_IRQCHIP_NUM_PINS 4096
-#define KVM_HALT_POLL_NS_DEFAULT 0
 
 #define SIGP_CTRL_C		0x80
 #define SIGP_CTRL_SCN_MASK	0x3f
@@ -82,7 +80,6 @@ struct sca_block {
 #define CPUSTAT_MCDS       0x00000100
 #define CPUSTAT_SM         0x00000080
 #define CPUSTAT_IBS        0x00000040
-#define CPUSTAT_GED2       0x00000010
 #define CPUSTAT_G          0x00000008
 #define CPUSTAT_GED        0x00000004
 #define CPUSTAT_J          0x00000002
@@ -98,8 +95,7 @@ struct kvm_s390_sie_block {
 #define PROG_IN_SIE (1<<0)
 	__u32	prog0c;			/* 0x000c */
 	__u8	reserved10[16];		/* 0x0010 */
-#define PROG_BLOCK_SIE	(1<<0)
-#define PROG_REQUEST	(1<<1)
+#define PROG_BLOCK_SIE 0x00000001
 	atomic_t prog20;		/* 0x0020 */
 	__u8	reserved24[4];		/* 0x0024 */
 	__u64	cputm;			/* 0x0028 */
@@ -211,7 +207,6 @@ struct kvm_vcpu_stat {
 	u32 exit_validity;
 	u32 exit_instruction;
 	u32 halt_successful_poll;
-	u32 halt_attempted_poll;
 	u32 halt_wakeup;
 	u32 instruction_lctl;
 	u32 instruction_lctlg;
@@ -261,9 +256,6 @@ struct kvm_vcpu_stat {
 	u32 diagnose_10;
 	u32 diagnose_44;
 	u32 diagnose_9c;
-	u32 diagnose_258;
-	u32 diagnose_308;
-	u32 diagnose_500;
 };
 
 #define PGM_OPERATION			0x01
@@ -427,7 +419,7 @@ struct kvm_s390_irq_payload {
 struct kvm_s390_local_interrupt {
 	spinlock_t lock;
 	struct kvm_s390_float_interrupt *float_int;
-	struct swait_queue_head *wq;
+	struct swait_head *wq;
 	atomic_t *cpuflags;
 	DECLARE_BITMAP(sigp_emerg_pending, KVM_MAX_VCPUS);
 	struct kvm_s390_irq_payload irq;
@@ -504,8 +496,10 @@ struct kvm_guestdbg_info_arch {
 
 struct kvm_vcpu_arch {
 	struct kvm_s390_sie_block *sie_block;
+	s390_fp_regs      host_fpregs;
 	unsigned int      host_acrs[NUM_ACRS];
-	struct fpu	  host_fpregs;
+	s390_fp_regs      guest_fpregs;
+	struct kvm_s390_vregs	*host_vregs;
 	struct kvm_s390_local_interrupt local_int;
 	struct hrtimer    ckc_timer;
 	struct kvm_s390_pgm_info pgm;
@@ -634,16 +628,15 @@ extern char sie_exit;
 
 static inline void kvm_arch_hardware_disable(void) {}
 static inline void kvm_arch_check_processor_compat(void *rtn) {}
+static inline void kvm_arch_exit(void) {}
 static inline void kvm_arch_sync_events(struct kvm *kvm) {}
 static inline void kvm_arch_vcpu_uninit(struct kvm_vcpu *vcpu) {}
 static inline void kvm_arch_sched_in(struct kvm_vcpu *vcpu, int cpu) {}
 static inline void kvm_arch_free_memslot(struct kvm *kvm,
 		struct kvm_memory_slot *free, struct kvm_memory_slot *dont) {}
-static inline void kvm_arch_memslots_updated(struct kvm *kvm, struct kvm_memslots *slots) {}
+static inline void kvm_arch_memslots_updated(struct kvm *kvm) {}
 static inline void kvm_arch_flush_shadow_all(struct kvm *kvm) {}
 static inline void kvm_arch_flush_shadow_memslot(struct kvm *kvm,
 		struct kvm_memory_slot *slot) {}
-static inline void kvm_arch_vcpu_blocking(struct kvm_vcpu *vcpu) {}
-static inline void kvm_arch_vcpu_unblocking(struct kvm_vcpu *vcpu) {}
 
 #endif

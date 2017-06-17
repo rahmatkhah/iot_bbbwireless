@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2017 Junjiro R. Okajima
+ * Copyright (C) 2005-2016 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -100,15 +100,15 @@ static int sysaufs_si_br(struct seq_file *seq, struct super_block *sb,
 		err = au_seq_path(seq, &path);
 		if (!err) {
 			au_optstr_br_perm(&perm, br->br_perm);
-			seq_printf(seq, "=%s\n", perm.a);
+			err = seq_printf(seq, "=%s\n", perm.a);
 		}
 		break;
 	case AuBrSysfs_BRID:
-		seq_printf(seq, "%d\n", br->br_id);
+		err = seq_printf(seq, "%d\n", br->br_id);
 		break;
 	}
 	di_read_unlock(root, !AuLock_IR);
-	if (unlikely(err || seq_has_overflowed(seq)))
+	if (err == -1)
 		err = -E2BIG;
 
 	return err;
@@ -209,7 +209,7 @@ out_seq:
 		if (unlikely(err == PAGE_SIZE))
 			err = -EFBIG;
 	}
-	kfree(seq);
+	au_delayed_kfree(seq);
 out_unlock:
 	si_read_unlock(sb);
 out:
@@ -265,8 +265,8 @@ static int au_brinfo(struct super_block *sb, union aufs_brinfo __user *arg)
 		err = au_seq_path(seq, &br->br_path);
 		if (unlikely(err))
 			break;
-		seq_putc(seq, '\0');
-		if (!seq_has_overflowed(seq)) {
+		err = seq_putc(seq, '\0');
+		if (!err && seq->count <= sz) {
 			err = copy_to_user(arg->path, seq->buf, seq->count);
 			seq->count = 0;
 			if (unlikely(err))
@@ -280,9 +280,9 @@ static int au_brinfo(struct super_block *sb, union aufs_brinfo __user *arg)
 		err = -EFAULT;
 
 out_seq:
-	kfree(seq);
+	au_delayed_kfree(seq);
 out_buf:
-	free_page((unsigned long)buf);
+	au_delayed_free_page((unsigned long)buf);
 out:
 	si_read_unlock(sb);
 	return err;

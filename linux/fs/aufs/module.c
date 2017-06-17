@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2017 Junjiro R. Okajima
+ * Copyright (C) 2005-2016 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,57 +23,13 @@
 #include <linux/seq_file.h>
 #include "aufs.h"
 
-/* shrinkable realloc */
-void *au_krealloc(void *p, unsigned int new_sz, gfp_t gfp, int may_shrink)
+void *au_kzrealloc(void *p, unsigned int nused, unsigned int new_sz, gfp_t gfp)
 {
-	size_t sz;
-	int diff;
+	if (new_sz <= nused)
+		return p;
 
-	sz = 0;
-	diff = -1;
-	if (p) {
-#if 0 /* unused */
-		if (!new_sz) {
-			kfree(p);
-			p = NULL;
-			goto out;
-		}
-#else
-		AuDebugOn(!new_sz);
-#endif
-		sz = ksize(p);
-		diff = au_kmidx_sub(sz, new_sz);
-	}
-	if (sz && !diff)
-		goto out;
-
-	if (sz < new_sz)
-		/* expand or SLOB */
-		p = krealloc(p, new_sz, gfp);
-	else if (new_sz < sz && may_shrink) {
-		/* shrink */
-		void *q;
-
-		q = kmalloc(new_sz, gfp);
-		if (q) {
-			if (p) {
-				memcpy(q, p, new_sz);
-				kfree(p);
-			}
-			p = q;
-		} else
-			p = NULL;
-	}
-
-out:
-	return p;
-}
-
-void *au_kzrealloc(void *p, unsigned int nused, unsigned int new_sz, gfp_t gfp,
-		   int may_shrink)
-{
-	p = au_krealloc(p, new_sz, gfp, may_shrink);
-	if (p && new_sz > nused)
+	p = krealloc(p, new_sz, gfp);
+	if (p)
 		memset(p + nused, 0, new_sz - nused);
 	return p;
 }
@@ -83,11 +39,60 @@ void *au_kzrealloc(void *p, unsigned int nused, unsigned int new_sz, gfp_t gfp,
  * aufs caches
  */
 
-struct kmem_cache *au_cache[AuCache_Last];
+struct au_dfree au_dfree;
+
+/* delayed free */
+static void au_do_dfree(struct work_struct *work __maybe_unused)
+{
+	struct llist_head *head;
+	struct llist_node *node, *next;
+
+#define AU_CACHE_DFREE_DO_BODY(name, idx, lnode) do {			\
+		head = &au_dfree.cache[AuCache_##idx].llist;		\
+		node = llist_del_all(head);				\
+		for (; node; node = next) {				\
+			struct au_##name *p =				\
+				p = llist_entry(node, struct au_##name,	\
+						lnode);			\
+			next = llist_next(node);			\
+			au_cache_free_##name(p);			\
+		}							\
+	} while (0)
+
+	AU_CACHE_DFREE_DO_BODY(dinfo, DINFO, di_lnode);
+	AU_CACHE_DFREE_DO_BODY(icntnr, ICNTNR, lnode);
+	AU_CACHE_DFREE_DO_BODY(finfo, FINFO, fi_lnode);
+	AU_CACHE_DFREE_DO_BODY(vdir, VDIR, vd_lnode);
+	AU_CACHE_DFREE_DO_BODY(vdir_dehstr, DEHSTR, lnode);
+#ifdef CONFIG_AUFS_HNOTIFY
+	AU_CACHE_DFREE_DO_BODY(hnotify, HNOTIFY, hn_lnode);
+#endif
+
+#define AU_DFREE_DO_BODY(llist, func) do {		\
+		node = llist_del_all(llist);		\
+		for (; node; node = next) {		\
+			next = llist_next(node);	\
+			func(node);			\
+		}					\
+	} while (0)
+
+	AU_DFREE_DO_BODY(au_dfree.llist + AU_DFREE_KFREE, kfree);
+	AU_DFREE_DO_BODY(au_dfree.llist + AU_DFREE_FREE_PAGE, au_free_page);
+
+#undef AU_CACHE_DFREE_DO_BODY
+#undef AU_DFREE_DO_BODY
+}
+
+AU_CACHE_DFREE_FUNC(dinfo, DINFO, di_lnode);
+AU_CACHE_DFREE_FUNC(icntnr, ICNTNR, lnode);
+AU_CACHE_DFREE_FUNC(finfo, FINFO, fi_lnode);
+AU_CACHE_DFREE_FUNC(vdir, VDIR, vd_lnode);
+AU_CACHE_DFREE_FUNC(vdir_dehstr, DEHSTR, lnode);
 
 static void au_cache_fin(void)
 {
 	int i;
+	struct au_cache *cp;
 
 	/*
 	 * Make sure all delayed rcu free inodes are flushed before we
@@ -97,27 +102,33 @@ static void au_cache_fin(void)
 
 	/* excluding AuCache_HNOTIFY */
 	BUILD_BUG_ON(AuCache_HNOTIFY + 1 != AuCache_Last);
+	flush_delayed_work(&au_dfree.dwork);
 	for (i = 0; i < AuCache_HNOTIFY; i++) {
-		kmem_cache_destroy(au_cache[i]);
-		au_cache[i] = NULL;
+		cp = au_dfree.cache + i;
+		AuDebugOn(!llist_empty(&cp->llist));
+		if (cp->cache)
+			kmem_cache_destroy(cp->cache);
 	}
 }
 
 static int __init au_cache_init(void)
 {
-	au_cache[AuCache_DINFO] = AuCacheCtor(au_dinfo, au_di_init_once);
-	if (au_cache[AuCache_DINFO])
+	struct au_cache *cp;
+
+	cp = au_dfree.cache;
+	cp[AuCache_DINFO].cache = AuCacheCtor(au_dinfo, au_di_init_once);
+	if (cp[AuCache_DINFO].cache)
 		/* SLAB_DESTROY_BY_RCU */
-		au_cache[AuCache_ICNTNR] = AuCacheCtor(au_icntnr,
+		cp[AuCache_ICNTNR].cache = AuCacheCtor(au_icntnr,
 						       au_icntnr_init_once);
-	if (au_cache[AuCache_ICNTNR])
-		au_cache[AuCache_FINFO] = AuCacheCtor(au_finfo,
+	if (cp[AuCache_ICNTNR].cache)
+		cp[AuCache_FINFO].cache = AuCacheCtor(au_finfo,
 						      au_fi_init_once);
-	if (au_cache[AuCache_FINFO])
-		au_cache[AuCache_VDIR] = AuCache(au_vdir);
-	if (au_cache[AuCache_VDIR])
-		au_cache[AuCache_DEHSTR] = AuCache(au_vdir_dehstr);
-	if (au_cache[AuCache_DEHSTR])
+	if (cp[AuCache_FINFO].cache)
+		cp[AuCache_VDIR].cache = AuCache(au_vdir);
+	if (cp[AuCache_VDIR].cache)
+		cp[AuCache_DEHSTR].cache = AuCache(au_vdir_dehstr);
+	if (cp[AuCache_DEHSTR].cache)
 		return 0;
 
 	au_cache_fin();
@@ -166,9 +177,9 @@ int au_seq_path(struct seq_file *seq, struct path *path)
 	int err;
 
 	err = seq_path(seq, path, au_esc_chars);
-	if (err >= 0)
+	if (err > 0)
 		err = 0;
-	else
+	else if (err < 0)
 		err = -ENOMEM;
 
 	return err;
@@ -180,6 +191,7 @@ static int __init aufs_init(void)
 {
 	int err, i;
 	char *p;
+	struct au_cache *cp;
 
 	p = au_esc_chars;
 	for (i = 1; i <= ' '; i++)
@@ -194,9 +206,15 @@ static int __init aufs_init(void)
 	for (i = 0; i < AuIop_Last; i++)
 		aufs_iop_nogetattr[i].getattr = NULL;
 
-	/* First, initialize au_cache */
-	for (i = 0; i < AuCache_Last; i++)	/* including hnotify */
-		au_cache[i] = NULL;
+	/* First, initialize au_dfree */
+	for (i = 0; i < AuCache_Last; i++) {	/* including hnotify */
+		cp = au_dfree.cache + i;
+		cp->cache = NULL;
+		init_llist_head(&cp->llist);
+	}
+	for (i = 0; i < AU_DFREE_Last; i++)
+		init_llist_head(au_dfree.llist + i);
+	INIT_DELAYED_WORK(&au_dfree.dwork, au_do_dfree);
 
 	au_sbilist_init();
 	sysaufs_brs_init();
@@ -248,6 +266,7 @@ out_procfs:
 out_sysaufs:
 	sysaufs_fin();
 	au_dy_fin();
+	flush_delayed_work(&au_dfree.dwork);
 out:
 	return err;
 }
@@ -263,6 +282,7 @@ static void __exit aufs_exit(void)
 	au_procfs_fin();
 	sysaufs_fin();
 	au_dy_fin();
+	flush_delayed_work(&au_dfree.dwork);
 }
 
 module_init(aufs_init);

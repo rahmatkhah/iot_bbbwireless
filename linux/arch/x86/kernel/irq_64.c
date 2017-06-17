@@ -20,6 +20,12 @@
 #include <asm/idle.h>
 #include <asm/apic.h>
 
+DEFINE_PER_CPU_SHARED_ALIGNED(irq_cpustat_t, irq_stat);
+EXPORT_PER_CPU_SYMBOL(irq_stat);
+
+DEFINE_PER_CPU(struct pt_regs *, irq_regs);
+EXPORT_PER_CPU_SYMBOL(irq_regs);
+
 int sysctl_panic_on_stackoverflow;
 
 /*
@@ -68,13 +74,16 @@ static inline void stack_overflow_check(struct pt_regs *regs)
 #endif
 }
 
-bool handle_irq(struct irq_desc *desc, struct pt_regs *regs)
+bool handle_irq(unsigned irq, struct pt_regs *regs)
 {
+	struct irq_desc *desc;
+
 	stack_overflow_check(regs);
 
-	if (IS_ERR_OR_NULL(desc))
+	desc = irq_to_desc(irq);
+	if (unlikely(!desc))
 		return false;
 
-	generic_handle_irq_desc(desc);
+	generic_handle_irq_desc(irq, desc);
 	return true;
 }

@@ -301,17 +301,6 @@ static void otg_timer(unsigned long _musb)
 	spin_unlock_irqrestore(&musb->lock, flags);
 }
 
-void dsps_musb_clear_ep_rxintr(struct musb *musb, int epnum)
-{
-	u32 epintr;
-	struct dsps_glue *glue = dev_get_drvdata(musb->controller->parent);
-	const struct dsps_musb_wrapper *wrp = glue->wrp;
-
-	/* musb->lock might already been held */
-	epintr = (1 << epnum) << wrp->rxep_shift;
-	musb_writel(musb->ctrl_base, wrp->epintr_status, epintr);
-}
-
 static irqreturn_t dsps_interrupt(int irq, void *hci)
 {
 	struct musb  *musb = hci;
@@ -496,7 +485,11 @@ static int dsps_musb_init(struct musb *musb)
 		dsps_writeb(musb->mregs, MUSB_BABBLE_CTL, val);
 	}
 
-	return dsps_musb_dbg_init(musb, glue);
+	ret = dsps_musb_dbg_init(musb, glue);
+	if (ret)
+		return ret;
+
+	return 0;
 }
 
 static int dsps_musb_exit(struct musb *musb)
@@ -644,21 +637,16 @@ static void dsps_read_fifo32(struct musb_hw_ep *hw_ep, u16 len, u8 *dst)
 }
 
 static struct musb_platform_ops dsps_ops = {
-	.quirks		= MUSB_DMA_CPPI41 | MUSB_INDEXED_EP,
+	.quirks		= MUSB_INDEXED_EP,
 	.init		= dsps_musb_init,
 	.exit		= dsps_musb_exit,
 
-#ifdef CONFIG_USB_TI_CPPI41_DMA
-	.dma_init	= cppi41_dma_controller_create,
-	.dma_exit	= cppi41_dma_controller_destroy,
-#endif
 	.enable		= dsps_musb_enable,
 	.disable	= dsps_musb_disable,
 
 	.try_idle	= dsps_musb_try_idle,
 	.set_mode	= dsps_musb_set_mode,
 	.recover	= dsps_musb_recover,
-	.clear_ep_rxintr = dsps_musb_clear_ep_rxintr,
 };
 
 static u64 musb_dmamask = DMA_BIT_MASK(32);
@@ -678,7 +666,7 @@ static int get_musb_port_mode(struct device *dev)
 {
 	enum usb_dr_mode mode;
 
-	mode = usb_get_dr_mode(dev);
+	mode = of_usb_get_dr_mode(dev->of_node);
 	switch (mode) {
 	case USB_DR_MODE_HOST:
 		return MUSB_PORT_MODE_HOST;
@@ -758,19 +746,6 @@ static int dsps_create_musb_pdev(struct dsps_glue *glue,
 	ret = of_property_read_u32(dn, "mentor,multipoint", &val);
 	if (!ret && val)
 		config->multipoint = true;
-
-	config->maximum_speed = usb_get_maximum_speed(&parent->dev);
-	switch (config->maximum_speed) {
-	case USB_SPEED_LOW:
-	case USB_SPEED_FULL:
-		break;
-	case USB_SPEED_SUPER:
-		dev_warn(dev, "ignore incorrect maximum_speed "
-				"(super-speed) setting in dts");
-		/* fall through */
-	default:
-		config->maximum_speed = USB_SPEED_HIGH;
-	}
 
 	ret = platform_device_add_data(musb, &pdata, sizeof(pdata));
 	if (ret) {

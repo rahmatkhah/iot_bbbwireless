@@ -61,7 +61,6 @@
 #include <linux/string.h>
 #include <linux/dma-debug.h>
 #include <linux/debugfs.h>
-#include <linux/userfaultfd_k.h>
 
 #include <asm/io.h>
 #include <asm/pgalloc.h>
@@ -181,22 +180,22 @@ static void check_sync_rss_stat(struct task_struct *task)
 
 #ifdef HAVE_GENERIC_MMU_GATHER
 
-static bool tlb_next_batch(struct mmu_gather *tlb)
+static int tlb_next_batch(struct mmu_gather *tlb)
 {
 	struct mmu_gather_batch *batch;
 
 	batch = tlb->active;
 	if (batch->next) {
 		tlb->active = batch->next;
-		return true;
+		return 1;
 	}
 
 	if (tlb->batch_count == MAX_GATHER_BATCH_COUNT)
-		return false;
+		return 0;
 
 	batch = (void *)__get_free_pages(GFP_NOWAIT | __GFP_NOWARN, 0);
 	if (!batch)
-		return false;
+		return 0;
 
 	tlb->batch_count++;
 	batch->next = NULL;
@@ -206,7 +205,7 @@ static bool tlb_next_batch(struct mmu_gather *tlb)
 	tlb->active->next = batch;
 	tlb->active = batch;
 
-	return true;
+	return 1;
 }
 
 /* tlb_gather_mmu
@@ -796,46 +795,6 @@ check_pfn:
 out:
 	return pfn_to_page(pfn);
 }
-
-#ifdef CONFIG_TRANSPARENT_HUGEPAGE
-struct page *vm_normal_page_pmd(struct vm_area_struct *vma, unsigned long addr,
-				pmd_t pmd)
-{
-	unsigned long pfn = pmd_pfn(pmd);
-
-	/*
-	 * There is no pmd_special() but there may be special pmds, e.g.
-	 * in a direct-access (dax) mapping, so let's just replicate the
-	 * !HAVE_PTE_SPECIAL case from vm_normal_page() here.
-	 */
-	if (unlikely(vma->vm_flags & (VM_PFNMAP|VM_MIXEDMAP))) {
-		if (vma->vm_flags & VM_MIXEDMAP) {
-			if (!pfn_valid(pfn))
-				return NULL;
-			goto out;
-		} else {
-			unsigned long off;
-			off = (addr - vma->vm_start) >> PAGE_SHIFT;
-			if (pfn == vma->vm_pgoff + off)
-				return NULL;
-			if (!is_cow_mapping(vma->vm_flags))
-				return NULL;
-		}
-	}
-
-	if (is_zero_pfn(pfn))
-		return NULL;
-	if (unlikely(pfn > highest_memmap_pfn))
-		return NULL;
-
-	/*
-	 * NOTE! We still have PageReserved() pages in the page tables.
-	 * eg. VDSO mappings can cause them to exist.
-	 */
-out:
-	return pfn_to_page(pfn);
-}
-#endif
 
 /*
  * copy one vm_area from one task to the other. Assumes the page tables
@@ -2122,11 +2081,10 @@ static int wp_page_copy(struct mm_struct *mm, struct vm_area_struct *vma,
 			goto oom;
 		cow_user_page(new_page, old_page, address, vma);
 	}
+	__SetPageUptodate(new_page);
 
 	if (mem_cgroup_try_charge(new_page, mm, GFP_KERNEL, &memcg))
 		goto oom_free_new;
-
-	__SetPageUptodate(new_page);
 
 	mmu_notifier_invalidate_range_start(mm, mmun_start, mmun_end);
 
@@ -2726,12 +2684,6 @@ static int do_anonymous_page(struct mm_struct *mm, struct vm_area_struct *vma,
 		page_table = pte_offset_map_lock(mm, pmd, address, &ptl);
 		if (!pte_none(*page_table))
 			goto unlock;
-		/* Deliver the page fault to userland, check inside PT lock */
-		if (userfaultfd_missing(vma)) {
-			pte_unmap_unlock(page_table, ptl);
-			return handle_userfault(vma, address, flags,
-						VM_UFFD_MISSING);
-		}
 		goto setpte;
 	}
 
@@ -2741,16 +2693,15 @@ static int do_anonymous_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	page = alloc_zeroed_user_highpage_movable(vma, address);
 	if (!page)
 		goto oom;
-
-	if (mem_cgroup_try_charge(page, mm, GFP_KERNEL, &memcg))
-		goto oom_free_page;
-
 	/*
 	 * The memory barrier inside __SetPageUptodate makes sure that
 	 * preceeding stores to the page contents become visible before
 	 * the set_pte_at() write.
 	 */
 	__SetPageUptodate(page);
+
+	if (mem_cgroup_try_charge(page, mm, GFP_KERNEL, &memcg))
+		goto oom_free_page;
 
 	entry = mk_pte(page, vma->vm_page_prot);
 	if (vma->vm_flags & VM_WRITE)
@@ -2759,15 +2710,6 @@ static int do_anonymous_page(struct mm_struct *mm, struct vm_area_struct *vma,
 	page_table = pte_offset_map_lock(mm, pmd, address, &ptl);
 	if (!pte_none(*page_table))
 		goto release;
-
-	/* Deliver the page fault to userland, check inside PT lock */
-	if (userfaultfd_missing(vma)) {
-		pte_unmap_unlock(page_table, ptl);
-		mem_cgroup_cancel_charge(page, memcg);
-		page_cache_release(page);
-		return handle_userfault(vma, address, flags,
-					VM_UFFD_MISSING);
-	}
 
 	inc_mm_counter_fast(mm, MM_ANONPAGES);
 	page_add_new_anon_rmap(page, vma, address);
@@ -3272,27 +3214,6 @@ out:
 	return 0;
 }
 
-static int create_huge_pmd(struct mm_struct *mm, struct vm_area_struct *vma,
-			unsigned long address, pmd_t *pmd, unsigned int flags)
-{
-	if (vma_is_anonymous(vma))
-		return do_huge_pmd_anonymous_page(mm, vma, address, pmd, flags);
-	if (vma->vm_ops->pmd_fault)
-		return vma->vm_ops->pmd_fault(vma, address, pmd, flags);
-	return VM_FAULT_FALLBACK;
-}
-
-static int wp_huge_pmd(struct mm_struct *mm, struct vm_area_struct *vma,
-			unsigned long address, pmd_t *pmd, pmd_t orig_pmd,
-			unsigned int flags)
-{
-	if (vma_is_anonymous(vma))
-		return do_huge_pmd_wp_page(mm, vma, address, pmd, orig_pmd);
-	if (vma->vm_ops->pmd_fault)
-		return vma->vm_ops->pmd_fault(vma, address, pmd, flags);
-	return VM_FAULT_FALLBACK;
-}
-
 /*
  * These routines also need to handle stuff like marking pages dirty
  * and/or accessed for architectures that don't do it in hardware (most
@@ -3328,12 +3249,12 @@ static int handle_pte_fault(struct mm_struct *mm,
 	barrier();
 	if (!pte_present(entry)) {
 		if (pte_none(entry)) {
-			if (vma_is_anonymous(vma))
-				return do_anonymous_page(mm, vma, address,
-							 pte, pmd, flags);
-			else
+			if (vma->vm_ops)
 				return do_fault(mm, vma, address, pte, pmd,
 						flags, entry);
+
+			return do_anonymous_page(mm, vma, address, pte, pmd,
+					flags);
 		}
 		return do_swap_page(mm, vma, address,
 					pte, pmd, flags, entry);
@@ -3395,7 +3316,10 @@ static int __handle_mm_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 	if (!pmd)
 		return VM_FAULT_OOM;
 	if (pmd_none(*pmd) && transparent_hugepage_enabled(vma)) {
-		int ret = create_huge_pmd(mm, vma, address, pmd, flags);
+		int ret = VM_FAULT_FALLBACK;
+		if (!vma->vm_ops)
+			ret = do_huge_pmd_anonymous_page(mm, vma, address,
+					pmd, flags);
 		if (!(ret & VM_FAULT_FALLBACK))
 			return ret;
 	} else {
@@ -3419,8 +3343,8 @@ static int __handle_mm_fault(struct mm_struct *mm, struct vm_area_struct *vma,
 							     orig_pmd, pmd);
 
 			if (dirty && !pmd_write(orig_pmd)) {
-				ret = wp_huge_pmd(mm, vma, address, pmd,
-							orig_pmd, flags);
+				ret = do_huge_pmd_wp_page(mm, vma, address, pmd,
+							  orig_pmd);
 				if (!(ret & VM_FAULT_FALLBACK))
 					return ret;
 			} else {
@@ -3816,7 +3740,7 @@ void print_vma_addr(char *prefix, unsigned long ip)
 		if (buf) {
 			char *p;
 
-			p = file_path(f, buf, PAGE_SIZE);
+			p = d_path(&f->f_path, buf, PAGE_SIZE);
 			if (IS_ERR(p))
 				p = "?";
 			printk("%s%s[%lx+%lx]", prefix, kbasename(p),

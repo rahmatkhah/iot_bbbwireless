@@ -20,14 +20,11 @@
 #ifndef _TI_CPTS_H_
 #define _TI_CPTS_H_
 
-#if IS_ENABLED(CONFIG_TI_CPTS)
-
 #include <linux/clk.h>
 #include <linux/clkdev.h>
 #include <linux/clocksource.h>
 #include <linux/device.h>
 #include <linux/list.h>
-#include <linux/of.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/skbuff.h>
 #include <linux/timecounter.h>
@@ -35,7 +32,7 @@
 struct cpsw_cpts {
 	u32 idver;                /* Identification and version */
 	u32 control;              /* Time sync control */
-	u32 rftclk_sel;		  /* Reference Clock Select Register */
+	u32 res1;
 	u32 ts_push;              /* Time stamp event push */
 	u32 ts_load_val;          /* Time stamp load value */
 	u32 ts_load_en;           /* Time stamp load enable */
@@ -67,8 +64,6 @@ struct cpsw_cpts {
 #define INT_TEST             (1<<1)  /* Interrupt Test */
 #define CPTS_EN              (1<<0)  /* Time Sync Enable */
 
-#define CPTS_RFTCLK_SEL_MASK 0x1f
-
 /*
  * Definitions for the single bit resisters:
  * TS_PUSH TS_LOAD_EN  INTSTAT_RAW INTSTAT_MASKED INT_ENABLE EVENT_POP
@@ -99,11 +94,11 @@ enum {
 	CPTS_EV_TX,   /* Ethernet Transmit Event */
 };
 
+/* This covers any input clock up to about 500 MHz. */
+#define CPTS_OVERFLOW_PERIOD (HZ * 8)
+
 #define CPTS_FIFO_DEPTH 16
 #define CPTS_MAX_EVENTS 32
-
-#define CPTS_EVENT_RX_TX_TIMEOUT 20 /* ms */
-#define CPTS_EVENT_HWSTAMP_TIMEOUT 200 /* ms */
 
 struct cpts_event {
 	struct list_head list;
@@ -112,13 +107,11 @@ struct cpts_event {
 	u32 low;
 };
 
-#define CPTS_CAP_RFTCLK_SEL BIT(0)
-
 struct cpts {
-	struct device *dev;
 	struct cpsw_cpts __iomem *reg;
 	int tx_enable;
 	int rx_enable;
+#ifdef CONFIG_TI_CPTS
 	struct ptp_clock_info info;
 	struct ptp_clock *clock;
 	spinlock_t lock; /* protects time registers */
@@ -131,94 +124,22 @@ struct cpts {
 	struct list_head events;
 	struct list_head pool;
 	struct cpts_event pool_data[CPTS_MAX_EVENTS];
-	unsigned long ov_check_period;
-	unsigned long ov_check_period_slow;
-	u32 rftclk_sel;
-	u32 ext_ts_inputs;
-	u32 hw_ts_enable;
-	u32 caps;
+#endif
 };
 
-int cpts_rx_timestamp(struct cpts *cpts, struct sk_buff *skb);
-int cpts_tx_timestamp(struct cpts *cpts, struct sk_buff *skb);
-int cpts_register(struct cpts *cpts);
-void cpts_unregister(struct cpts *cpts);
-struct cpts *cpts_create(struct device *dev, void __iomem *regs,
-			 struct device_node *node);
-void cpts_release(struct cpts *cpts);
-
-static inline void cpts_rx_enable(struct cpts *cpts, int enable)
-{
-	cpts->rx_enable = enable;
-}
-
-static inline bool cpts_is_rx_enabled(struct cpts *cpts)
-{
-	return !!cpts->rx_enable;
-}
-
-static inline void cpts_tx_enable(struct cpts *cpts, int enable)
-{
-	cpts->tx_enable = enable;
-}
-
-static inline bool cpts_is_tx_enabled(struct cpts *cpts)
-{
-	return !!cpts->tx_enable;
-}
-
+#ifdef CONFIG_TI_CPTS
+void cpts_rx_timestamp(struct cpts *cpts, struct sk_buff *skb);
+void cpts_tx_timestamp(struct cpts *cpts, struct sk_buff *skb);
 #else
-struct cpts;
-
-static inline int cpts_rx_timestamp(struct cpts *cpts, struct sk_buff *skb)
-{
-	return -EOPNOTSUPP;
-}
-
-static inline int cpts_tx_timestamp(struct cpts *cpts, struct sk_buff *skb)
-{
-	return -EOPNOTSUPP;
-}
-
-static inline
-struct cpts *cpts_create(struct device *dev, void __iomem *regs,
-			 struct device_node *node)
-{
-	return NULL;
-}
-
-static inline void cpts_release(struct cpts *cpts)
+static inline void cpts_rx_timestamp(struct cpts *cpts, struct sk_buff *skb)
 {
 }
-
-static inline int
-cpts_register(struct cpts *cpts)
+static inline void cpts_tx_timestamp(struct cpts *cpts, struct sk_buff *skb)
 {
-	return 0;
-}
-
-static inline void cpts_unregister(struct cpts *cpts)
-{
-}
-
-static inline void cpts_rx_enable(struct cpts *cpts, int enable)
-{
-}
-
-static inline bool cpts_is_rx_enabled(struct cpts *cpts)
-{
-	return false;
-}
-
-static inline void cpts_tx_enable(struct cpts *cpts, int enable)
-{
-}
-
-static inline bool cpts_is_tx_enabled(struct cpts *cpts)
-{
-	return false;
 }
 #endif
 
+int cpts_register(struct device *dev, struct cpts *cpts, u32 mult, u32 shift);
+void cpts_unregister(struct cpts *cpts);
 
 #endif

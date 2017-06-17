@@ -33,6 +33,11 @@
 #include "../core.h"
 #include "pinctrl-samsung.h"
 
+#define GROUP_SUFFIX		"-grp"
+#define GSUFFIX_LEN		sizeof(GROUP_SUFFIX)
+#define FUNCTION_SUFFIX		"-mux"
+#define FSUFFIX_LEN		sizeof(FUNCTION_SUFFIX)
+
 /* list of all possible config options supported */
 static struct pin_config {
 	const char *property;
@@ -801,7 +806,7 @@ static int samsung_pinctrl_parse_dt(struct platform_device *pdev,
 	functions = samsung_pinctrl_create_functions(dev, drvdata, &func_cnt);
 	if (IS_ERR(functions)) {
 		dev_err(dev, "failed to parse pin functions\n");
-		return PTR_ERR(functions);
+		return PTR_ERR(groups);
 	}
 
 	drvdata->pin_groups = groups;
@@ -868,9 +873,9 @@ static int samsung_pinctrl_register(struct platform_device *pdev,
 		return ret;
 
 	drvdata->pctl_dev = pinctrl_register(ctrldesc, &pdev->dev, drvdata);
-	if (IS_ERR(drvdata->pctl_dev)) {
+	if (!drvdata->pctl_dev) {
 		dev_err(&pdev->dev, "could not register pinctrl driver\n");
-		return PTR_ERR(drvdata->pctl_dev);
+		return -EINVAL;
 	}
 
 	for (bank = 0; bank < drvdata->nr_banks; ++bank) {
@@ -888,9 +893,19 @@ static int samsung_pinctrl_register(struct platform_device *pdev,
 	return 0;
 }
 
+static int samsung_gpio_request(struct gpio_chip *chip, unsigned offset)
+{
+	return pinctrl_request_gpio(chip->base + offset);
+}
+
+static void samsung_gpio_free(struct gpio_chip *chip, unsigned offset)
+{
+	pinctrl_free_gpio(chip->base + offset);
+}
+
 static const struct gpio_chip samsung_gpiolib_chip = {
-	.request = gpiochip_generic_request,
-	.free = gpiochip_generic_free,
+	.request = samsung_gpio_request,
+	.free = samsung_gpio_free,
 	.set = samsung_gpio_set,
 	.get = samsung_gpio_get,
 	.direction_input = samsung_gpio_direction_input,

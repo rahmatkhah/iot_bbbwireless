@@ -22,9 +22,6 @@
 
 #include "vsock_addr.h"
 
-/* vsock-specific sock->sk_state constants */
-#define VSOCK_SS_LISTEN 255
-
 #define LAST_RESERVED_PORT 1023
 
 #define vsock_sk(__sk)    ((struct vsock_sock *)__sk)
@@ -77,7 +74,7 @@ void vsock_pending_work(struct work_struct *work);
 struct sock *__vsock_create(struct net *net,
 			    struct socket *sock,
 			    struct sock *parent,
-			    gfp_t priority, unsigned short type, int kern);
+			    gfp_t priority, unsigned short type);
 
 /**** TRANSPORT ****/
 

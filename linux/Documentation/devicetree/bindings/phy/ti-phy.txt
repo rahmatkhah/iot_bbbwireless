@@ -31,9 +31,7 @@ OMAP USB2 PHY
 
 Required properties:
  - compatible: Should be "ti,omap-usb2"
-	       Should be "ti,dra7x-usb2" for the 1st instance of USB2 PHY on
-	       DRA7x
-	       Should be "ti,dra7x-usb2-phy2" for the 2nd instance of USB2 PHY
+	       Should be "ti,dra746-usb2-phy2" for the 2nd instance of USB2 PHY
 	       in DRA7x
  - reg : Address and length of the register set for the device.
  - #phy-cells: determine the number of cells that should be given in the
@@ -93,6 +91,8 @@ Optional properties:
    register that contains the SATA_PLL_SOFT_RESET bit. Only valid for sata_phy.
  - syscon-pcs : phandle/offset pair. Phandle to the system control module and the
    register offset to write the PCS delay value.
+ - "ti,configure-as-pcie" : property to indicate if the PHY should be
+   configured as PCIE PHY.
 
 Deprecated properties:
  - ctrl-module : phandle of the control module used by PHY driver to power on
@@ -129,7 +129,7 @@ sata_phy: phy@4A096000 {
 	ctrl-module = <&omap_control_sata>;
 	clocks = <&sys_clkin1>, <&sata_ref_clk>;
 	clock-names = "sysclk", "refclk";
-	syscon-pllreset = <&scm_conf 0x3fc>;
+	syscon-pllreset = <&dra7_ctrl_core 0x3fc>;
 	#phy-cells = <0>;
 
 TI Keystone SerDes PHY
@@ -142,6 +142,8 @@ Required properties:
 	* "ti,keystone-serdes-pcie"
  - reg:
 	* base address and length of the SerDes register set
+ - #phy-cells:
+	* From the generic phy bindings, must be 0;
  - num-lanes:
 	* Number of lanes in SerDes.
 
@@ -166,8 +168,6 @@ the "status" property.  If a lane is not represented by a node, the
 lane is disabled.
 
 Required properties (lane sub-node):
- - #phy-cells:
-	* From the generic phy bindings, must be 0;
  - reg:
 	* lane number
 
@@ -195,102 +195,62 @@ Example for Keystone K2E GBE:
 -----------------------------
 
 gbe_serdes0: phy@232a000 {
+	#phy-cells		= <0>;
 	compatible		= "ti,keystone-serdes-gbe";
 	reg			= <0x0232a000 0x2000>;
 	link-rate-kbps		= <1250000>;
 	num-lanes		= <4>;
-	#address-cells = <1>;
-	#size-cells = <0>;
-
-	serdes0_lane0: lane@0 {
-		status		= "ok";
-		/*loopback;*/
-		#phy-cells	= <0>;
-		reg		= <0>;
-		control-rate	= <2>; /* quart */
-		rx-start	= <7 5>;
-		rx-force	= <1 1>;
-		tx-coeff	= <0 0 0 12 4>; /* c1 c2 cm att vreg */
-	};
-	serdes0_lane1: lane@1 {
-		status		= "ok";
-		/*loopback;*/
-		#phy-cells	= <0>;
-		reg		= <1>;
-		control-rate	= <2>; /* quart */
-		rx-start	= <7 5>;
-		rx-force	= <1 1>;
-		tx-coeff	= <0 0 0 12 4>; /* c1 c2 cm att vreg */
-	};
-	serdes0_lane2: lane@2 {
-		status		= "disabled";
-		/*loopback;*/
-		#phy-cells	= <0>;
-		reg		= <2>;
-		control-rate	= <2>; /* quart */
-		rx-start	= <7 5>;
-		rx-force	= <1 1>;
-		tx-coeff	= <0 0 0 12 4>; /* c1 c2 cm att vreg */
-	};
-	serdes0_lane3: lane@3 {
-		status		= "disabled";
-		/*loopback;*/
-		#phy-cells	= <0>;
-		reg		= <3>;
-		control-rate	= <2>; /* quart */
-		rx-start	= <7 5>;
-		rx-force	= <1 1>;
-		tx-coeff	= <0 0 0 12 4>; /* c1 c2 cm att vreg */
+	lanes {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		lane@0 {
+			/*loopback;*/
+			reg		= <0>;
+			control-rate	= <2>; /* quart */
+			rx-start	= <7 5>;
+			rx-force	= <1 1>;
+			tx-coeff	= <0 0 0 12 4>;
+			       /* c1 c2 cm att vreg */
+		};
+		lane@1 {
+			/*loopback;*/
+			reg		= <1>;
+			control-rate	= <2>; /* quart */
+			rx-start	= <7 5>;
+			rx-force	= <1 1>;
+			tx-coeff	= <0 0 0 12 4>;
+			       /* c1 c2 cm att vreg */
+		};
 	};
 };
 
 gbe_serdes1: phy@2324000 {
+	#phy-cells		= <0>;
 	compatible		= "ti,keystone-serdes-gbe";
 	reg			= <0x02324000 0x2000>;
 	link-rate-kbps		= <1250000>;
 	num-lanes		= <4>;
-	#address-cells = <1>;
-	#size-cells = <0>;
-
-	serdes1_lane0: lane@0 {
-		status		= "disabled";
-		/*loopback;*/
-		#phy-cells	= <0>;
-		reg		= <0>;
-		control-rate	= <2>; /* quart */
-		rx-start	= <7 5>;
-		rx-force	= <1 1>;
-		tx-coeff	= <0 0 0 12 4>; /* c1 c2 cm att vreg */
-	};
-	serdes1_lane1: lane@1 {
-		status		= "disabled";
-		/*loopback;*/
-		#phy-cells	= <0>;
-		reg		= <1>;
-		control-rate	= <2>; /* quart */
-		rx-start	= <7 5>;
-		rx-force	= <1 1>;
-		tx-coeff	= <0 0 0 12 4>; /* c1 c2 cm att vreg */
-	};
-	serdes1_lane2: lane@2 {
-		status		= "disabled";
-		/*loopback;*/
-		#phy-cells	= <0>;
-		reg		= <2>;
-		control-rate	= <2>; /* quart */
-		rx-start	= <7 5>;
-		rx-force	= <1 1>;
-		tx-coeff	= <0 0 0 12 4>; /* c1 c2 cm att vreg */
-	};
-	serdes1_lane3: lane@3 {
-		status		= "disabled";
-		/*loopback;*/
-		#phy-cells	= <0>;
-		reg		= <3>;
-		control-rate	= <2>; /* quart */
-		rx-start	= <7 5>;
-		rx-force	= <1 1>;
-		tx-coeff	= <0 0 0 12 4>; /* c1 c2 cm att vreg */
+	lanes {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		lane@0 {
+			/*loopback;*/
+			reg		= <0>;
+			control-rate	= <2>; /* quart */
+			rx-start	= <7 5>;
+			rx-force	= <1 1>;
+			tx-coeff	= <0 0 0 12 4>;
+			       /* c1 c2 cm att vreg */
+		};
+		lane@1 {
+			/*loopback;*/
+			reg		= <1>;
+			control-rate	= <2>; /* quart */
+			rx-start	= <7 5>;
+			rx-force	= <1 1>;
+			tx-coeff	= <0 0 0 12 4>;
+			       /* c1 c2 cm att vreg */
+		};
 	};
 };
 
@@ -303,14 +263,7 @@ netcp: netcp@24000000 {
 		gbe@200000 { /* ETHSS */
 			...
 
-			gbe0: interface-0 {
-				phys = <&serdes0_lane0>;
-				...
-			};
-			gbe1: interface-1 {
-				phys = <&serdes0_lane1>;
-				...
-			};
+			phys = <&gbe_serdes0>, <&gbe_serdes1>;
 
 			...
 		};
@@ -323,15 +276,21 @@ Example for Keystone PCIE:
 --------------------------
 
 	pcie0_phy: phy@2320000 {
+		#phy-cells = <0>;
 		compatible = "ti,keystone-serdes-pcie";
 		reg = <0x02320000 0x4000>;
 		link-rate-kbps = <5000000>;
 		num-lanes = <2>;
 	};
 
-No SerDes phy handle needed in PCIe controller node
-since the SerDes PHY provider driver performs all
-the configurations needed for PCIe.
+
+Then the PHY can be used in PCIe controller node as
+
+	pcie0: pcie@21800000 {
+		...
+
+		phys = <&pcie0_phy>;
+	}
 
 Example for K2E 10GBE:
 ----------------------
@@ -356,32 +315,34 @@ Define the 10gbe SerDes node:
 
 xgbe_serdes: phy@231e000 {
 	status			= "ok";
+	#phy-cells		= <0>;
 	compatible		= "ti,keystone-serdes-xgbe";
 	reg			= <0x0231e000 0x2000>;
 	link-rate-kbps		= <10312500>;
 	num-lanes		= <2>;
 	syscon-peripheral	= <&xgbe_subsys>;
 	syscon-link		= <&xgbe_pcsr>;
-	#address-cells  = <1>;
-	#size-cells     = <0>;
-
-	xserdes_lane0: lane@0 {
-		status		= "ok";
-		#phy-cells	= <0>;
-		reg		= <0>;
-		control-rate	= <0>; /* full */
-		rx-start	= <7 5>;
-		rx-force	= <1 1>;
-		tx-coeff	= <2 0 0 12 4>; /* c1 c2 cm att vreg */
-	};
-	xserdes_lane1: lane@1 {
-		status		= "ok";
-		#phy-cells	= <0>;
-		reg		= <1>;
-		control-rate	= <0>; /* full */
-		rx-start	= <7 5>;
-		rx-force	= <1 1>;
-		tx-coeff	= <2 0 0 12 4>; /* c1 c2 cm att vreg */
+	lanes {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		lane@0 {
+			/*loopback;*/
+			reg		= <0>;
+			control-rate	= <0>; /* full */
+			rx-start	= <7 5>;
+			rx-force	= <1 1>;
+			tx-coeff	= <2 0 0 12 4>;
+				/* c1 c2 cm att vreg */
+		};
+		lane@1 {
+			/*loopback;*/
+			reg		= <1>;
+			control-rate	= <0>; /* full */
+			rx-start	= <7 5>;
+			rx-force	= <1 1>;
+			tx-coeff	= <2 0 0 12 4>;
+				/* c1 c2 cm att vreg */
+		};
 	};
 };
 
@@ -399,14 +360,9 @@ netcpx: netcpx@2f00000 {
 
 			...
 
-			xgbe0: interface-0 {
-				phys = <&xserdes_lane0>;
-				...
-			};
-			xgbe1: interface-1 {
-				phys = <&xserdes_lane1>;
-				...
-			};
+			syscon-subsys = <&xgbe_subsys>;
+			syscon-pcsr = <&xgbe_pcsr>;
+			phys = <&xgbe_serdes>;
 
 			...
 		};

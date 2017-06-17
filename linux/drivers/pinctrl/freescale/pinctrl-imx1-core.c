@@ -538,10 +538,8 @@ static int imx1_pinctrl_parse_functions(struct device_node *np,
 		func->groups[i] = child->name;
 		grp = &info->groups[grp_index++];
 		ret = imx1_pinctrl_parse_groups(child, grp, info, i++);
-		if (ret == -ENOMEM) {
-			of_node_put(child);
+		if (ret == -ENOMEM)
 			return ret;
-		}
 	}
 
 	return 0;
@@ -584,10 +582,8 @@ static int imx1_pinctrl_parse_dt(struct platform_device *pdev,
 
 	for_each_child_of_node(np, child) {
 		ret = imx1_pinctrl_parse_functions(child, info, ifunc++);
-		if (ret == -ENOMEM) {
-			of_node_put(child);
+		if (ret == -ENOMEM)
 			return -ENOMEM;
-		}
 	}
 
 	return 0;
@@ -636,9 +632,9 @@ int imx1_pinctrl_core_probe(struct platform_device *pdev,
 	ipctl->dev = info->dev;
 	platform_set_drvdata(pdev, ipctl);
 	ipctl->pctl = pinctrl_register(pctl_desc, &pdev->dev, ipctl);
-	if (IS_ERR(ipctl->pctl)) {
+	if (!ipctl->pctl) {
 		dev_err(&pdev->dev, "could not register IMX pinctrl driver\n");
-		return PTR_ERR(ipctl->pctl);
+		return -EINVAL;
 	}
 
 	ret = of_platform_populate(pdev->dev.of_node, NULL, NULL, &pdev->dev);

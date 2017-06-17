@@ -16,8 +16,6 @@
 #include <linux/clkdev.h>
 #include <linux/clk/ti.h>
 
-#include "clock.h"
-
 #define DRA7_DPLL_GMAC_DEFFREQ				1000000000
 #define DRA7_DPLL_USB_DEFFREQ				960000000
 
@@ -304,6 +302,9 @@ static struct ti_dt_clk dra7xx_clks[] = {
 	DT_CLK("4882a000.timer", "timer_sys_ck", "timer_sys_clk_div"),
 	DT_CLK("4882c000.timer", "timer_sys_ck", "timer_sys_clk_div"),
 	DT_CLK("4882e000.timer", "timer_sys_ck", "timer_sys_clk_div"),
+	DT_CLK("4843e200.ehrpwm", "tbclk", "ehrpwm0_tbclk"),
+	DT_CLK("48440200.ehrpwm", "tbclk", "ehrpwm1_tbclk"),
+	DT_CLK("48442200.ehrpwm", "tbclk", "ehrpwm2_tbclk"),
 	DT_CLK(NULL, "sys_clkin", "sys_clkin1"),
 	DT_CLK(NULL, "dss_deshdcp_clk", "dss_deshdcp_clk"),
 	{ .node_name = NULL },

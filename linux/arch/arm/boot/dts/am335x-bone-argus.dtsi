@@ -5,9 +5,6 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  */
-
-#include <dt-bindings/board/am335x-bbw-bbb-base.h>
-
 / {
 	ocp {
 		P8_07_pinmux {
@@ -48,7 +45,6 @@
 		};
 	};
 };
-
 / {
 	argus-ups {
 		compatible = "argus-ups";
@@ -85,25 +81,5 @@
 			0x1b4 (PIN_OUTPUT_PULLUP | MUX_MODE7) /* xdma_event_intr1.gpio0_20 */
 			0x164 (PIN_OUTPUT_PULLUP | MUX_MODE7) /* ecap0_in_pwm0_out.gpio0_7 */
 		>;
-	};
-
-	i2c2_pins: pinmux_i2c2_pins {
-		pinctrl-single,pins = <
-			BONE_P9_20 0x73 /* (SLEWCTRL_SLOW | PIN_INPUT_PULLUP | MUX_MODE3) uart1_ctsn.i2c2_sda */
-			BONE_P9_19 0x73 /* (SLEWCTRL_SLOW | PIN_INPUT_PULLUP | MUX_MODE3) uart1_rtsn.i2c2_scl */
-		>;
-	};
-};
-
-&i2c2 {
-	pinctrl-names = "default";
-	pinctrl-0 = <&i2c2_pins>;
-
-	status = "okay";
-	clock-frequency = <100000>;
-
-	rtc@68 {
-		compatible = "maxim,ds1307";
-		reg = <0x68>;
 	};
 };

@@ -21,7 +21,7 @@
 #include "prcm43xx.h"
 #include "omap_hwmod_common_data.h"
 #include "hdq1w.h"
-
+#include "soc.h"
 
 /* IP blocks */
 static struct omap_hwmod am43xx_emif_hwmod = {
@@ -202,6 +202,13 @@ static struct omap_hwmod am43xx_epwmss3_hwmod = {
 	},
 };
 
+static struct omap_hwmod am43xx_ehrpwm3_hwmod = {
+	.name		= "ehrpwm3",
+	.class		= &am33xx_ehrpwm_hwmod_class,
+	.clkdm_name	= "l4ls_clkdm",
+	.main_clk	= "l4ls_gclk",
+};
+
 static struct omap_hwmod am43xx_epwmss4_hwmod = {
 	.name		= "epwmss4",
 	.class		= &am33xx_epwmss_hwmod_class,
@@ -215,6 +222,13 @@ static struct omap_hwmod am43xx_epwmss4_hwmod = {
 	},
 };
 
+static struct omap_hwmod am43xx_ehrpwm4_hwmod = {
+	.name		= "ehrpwm4",
+	.class		= &am33xx_ehrpwm_hwmod_class,
+	.clkdm_name	= "l4ls_clkdm",
+	.main_clk	= "l4ls_gclk",
+};
+
 static struct omap_hwmod am43xx_epwmss5_hwmod = {
 	.name		= "epwmss5",
 	.class		= &am33xx_epwmss_hwmod_class,
@@ -226,6 +240,13 @@ static struct omap_hwmod am43xx_epwmss5_hwmod = {
 			.modulemode   = MODULEMODE_SWCTRL,
 		},
 	},
+};
+
+static struct omap_hwmod am43xx_ehrpwm5_hwmod = {
+	.name		= "ehrpwm5",
+	.class		= &am33xx_ehrpwm_hwmod_class,
+	.clkdm_name	= "l4ls_clkdm",
+	.main_clk	= "l4ls_gclk",
 };
 
 static struct omap_hwmod am43xx_spi2_hwmod = {
@@ -484,7 +505,7 @@ static struct omap_hwmod am43xx_dss_core_hwmod = {
 
 /* dispc */
 
-static struct omap_dss_dispc_dev_attr am43xx_dss_dispc_dev_attr = {
+struct omap_dss_dispc_dev_attr am43xx_dss_dispc_dev_attr = {
 	.manager_count		= 1,
 	.has_framedonetv_irq	= 0
 };
@@ -748,6 +769,13 @@ static struct omap_hwmod_ocp_if am43xx_l4_ls__epwmss3 = {
 	.user		= OCP_USER_MPU,
 };
 
+static struct omap_hwmod_ocp_if am43xx_epwmss3__ehrpwm3 = {
+	.master		= &am43xx_epwmss3_hwmod,
+	.slave		= &am43xx_ehrpwm3_hwmod,
+	.clk		= "l4ls_gclk",
+	.user		= OCP_USER_MPU,
+};
+
 static struct omap_hwmod_ocp_if am43xx_l4_ls__epwmss4 = {
 	.master		= &am33xx_l4_ls_hwmod,
 	.slave		= &am43xx_epwmss4_hwmod,
@@ -755,9 +783,23 @@ static struct omap_hwmod_ocp_if am43xx_l4_ls__epwmss4 = {
 	.user		= OCP_USER_MPU,
 };
 
+static struct omap_hwmod_ocp_if am43xx_epwmss4__ehrpwm4 = {
+	.master		= &am43xx_epwmss4_hwmod,
+	.slave		= &am43xx_ehrpwm4_hwmod,
+	.clk		= "l4ls_gclk",
+	.user		= OCP_USER_MPU,
+};
+
 static struct omap_hwmod_ocp_if am43xx_l4_ls__epwmss5 = {
 	.master		= &am33xx_l4_ls_hwmod,
 	.slave		= &am43xx_epwmss5_hwmod,
+	.clk		= "l4ls_gclk",
+	.user		= OCP_USER_MPU,
+};
+
+static struct omap_hwmod_ocp_if am43xx_epwmss5__ehrpwm5 = {
+	.master		= &am43xx_epwmss5_hwmod,
+	.slave		= &am43xx_ehrpwm5_hwmod,
 	.clk		= "l4ls_gclk",
 	.user		= OCP_USER_MPU,
 };
@@ -909,8 +951,11 @@ static struct omap_hwmod_ocp_if *am43xx_hwmod_ocp_ifs[] __initdata = {
 	&am43xx_l4_ls__timer10,
 	&am43xx_l4_ls__timer11,
 	&am43xx_l4_ls__epwmss3,
+	&am43xx_epwmss3__ehrpwm3,
 	&am43xx_l4_ls__epwmss4,
+	&am43xx_epwmss4__ehrpwm4,
 	&am43xx_l4_ls__epwmss5,
+	&am43xx_epwmss5__ehrpwm5,
 	&am43xx_l4_ls__mcspi2,
 	&am43xx_l4_ls__mcspi3,
 	&am43xx_l4_ls__mcspi4,
@@ -970,8 +1015,17 @@ static struct omap_hwmod_ocp_if *am43xx_hwmod_ocp_ifs[] __initdata = {
 	&am33xx_l4_ls__spinlock,
 	&am33xx_l4_ls__elm,
 	&am33xx_l4_ls__epwmss0,
+	&am33xx_epwmss0__ecap0,
+	&am33xx_epwmss0__eqep0,
+	&am33xx_epwmss0__ehrpwm0,
 	&am33xx_l4_ls__epwmss1,
+	&am33xx_epwmss1__ecap1,
+	&am33xx_epwmss1__eqep1,
+	&am33xx_epwmss1__ehrpwm1,
 	&am33xx_l4_ls__epwmss2,
+	&am33xx_epwmss2__ecap2,
+	&am33xx_epwmss2__eqep2,
+	&am33xx_epwmss2__ehrpwm2,
 	&am33xx_l3_s__gpmc,
 	&am33xx_l4_ls__mcspi0,
 	&am33xx_l4_ls__mcspi1,
@@ -1013,7 +1067,7 @@ int __init am43xx_hwmod_init(void)
 	omap_hwmod_init();
 	ret = omap_hwmod_register_links(am43xx_hwmod_ocp_ifs);
 
-	if (!(of_machine_is_compatible("ti,am438x")))
+	if (!soc_is_am438x())
 		ret = omap_hwmod_register_links(am43xx_rtc_hwmod_ocp_ifs);
 
 	return ret;

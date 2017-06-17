@@ -1921,7 +1921,6 @@ static int snd_seq_ioctl_set_client_pool(struct snd_seq_client *client,
 	     info.output_pool != client->pool->size)) {
 		if (snd_seq_write_pool_allocated(client)) {
 			/* remove all existing cells */
-			snd_seq_pool_mark_closing(client->pool);
 			snd_seq_queue_client_leave_cells(client->number);
 			snd_seq_pool_done(client->pool);
 		}
@@ -2451,7 +2450,7 @@ EXPORT_SYMBOL(snd_seq_kernel_client_write_poll);
 
 /*---------------------------------------------------------------------------*/
 
-#ifdef CONFIG_SND_PROC_FS
+#ifdef CONFIG_PROC_FS
 /*
  *  /proc interface
  */
@@ -2553,7 +2552,7 @@ void snd_seq_info_clients_read(struct snd_info_entry *entry,
 		snd_seq_client_unlock(client);
 	}
 }
-#endif /* CONFIG_SND_PROC_FS */
+#endif /* CONFIG_PROC_FS */
 
 /*---------------------------------------------------------------------------*/
 

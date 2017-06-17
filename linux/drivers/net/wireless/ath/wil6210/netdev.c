@@ -24,11 +24,6 @@ static int wil_open(struct net_device *ndev)
 
 	wil_dbg_misc(wil, "%s()\n", __func__);
 
-	if (debug_fw) {
-		wil_err(wil, "%s() while in debug_fw mode\n", __func__);
-		return -EINVAL;
-	}
-
 	return wil_up(wil);
 }
 
@@ -132,7 +127,7 @@ static void wil_dev_setup(struct net_device *dev)
 	dev->tx_queue_len = WIL_TX_Q_LEN_DEFAULT;
 }
 
-void *wil_if_alloc(struct device *dev)
+void *wil_if_alloc(struct device *dev, void __iomem *csr)
 {
 	struct net_device *ndev;
 	struct wireless_dev *wdev;
@@ -147,6 +142,7 @@ void *wil_if_alloc(struct device *dev)
 	}
 
 	wil = wdev_to_wil(wdev);
+	wil->csr = csr;
 	wil->wdev = wdev;
 
 	wil_dbg_misc(wil, "%s()\n", __func__);
@@ -173,10 +169,7 @@ void *wil_if_alloc(struct device *dev)
 	wil_set_ethtoolops(ndev);
 	ndev->ieee80211_ptr = wdev;
 	ndev->hw_features = NETIF_F_HW_CSUM | NETIF_F_RXCSUM |
-			    NETIF_F_SG | NETIF_F_GRO |
-			    NETIF_F_TSO | NETIF_F_TSO6 |
-			    NETIF_F_RXHASH;
-
+			    NETIF_F_SG | NETIF_F_GRO;
 	ndev->features |= ndev->hw_features;
 	SET_NETDEV_DEV(ndev, wiphy_dev(wdev->wiphy));
 	wdev->netdev = ndev;

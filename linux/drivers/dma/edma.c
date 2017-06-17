@@ -24,6 +24,8 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include <linux/ratelimit.h>
+#include <linux/printk.h>
 #include <linux/of.h>
 #include <linux/of_dma.h>
 #include <linux/of_irq.h>
@@ -98,8 +100,8 @@
 #define EDMA_M			0x1000	/* global channel registers */
 #define EDMA_ECR		0x1008
 #define EDMA_ECRH		0x100C
-#define EDMA_SHADOW0		0x2000	/* 4 shadow regions */
-#define EDMA_PARM		0x4000	/* PaRAM entries */
+#define EDMA_SHADOW0		0x2000	/* 4 regions shadowing global channels */
+#define EDMA_PARM		0x4000	/* 128 param entries */
 
 #define PARM_OFFSET(param_no)	(EDMA_PARM + ((param_no) << 5))
 
@@ -112,8 +114,6 @@
 #define GET_NUM_EVQUE(x)	((x & 0x70000) >> 16) /* bits 16-18 */
 #define GET_NUM_REGN(x)		((x & 0x300000) >> 20) /* bits 20-21 */
 #define CHMAP_EXIST		BIT(24)
-
-/* CCSTAT register */
 #define EDMA_CCSTAT_ACTV	BIT(4)
 
 /*
@@ -549,6 +549,20 @@ static void edma_link(struct edma_cc *ecc, unsigned from, unsigned to)
 
 	edma_param_modify(ecc, PARM_LINK_BCNTRLD, from, 0xffff0000,
 			  PARM_OFFSET(to));
+}
+
+/**
+ * edma_is_active - report if any transfer requests are active
+ * @slot: parameter RAM slot being examined
+ *
+ * Returns true if any transfer requests are active on the slot
+ */
+bool edma_is_active(struct edma_cc *ecc, unsigned slot)
+{
+	unsigned int ccstat;
+
+	ccstat = edma_read(ecc, EDMA_CCSTAT);
+	return (ccstat & EDMA_CCSTAT_ACTV);
 }
 
 /**
@@ -1144,8 +1158,7 @@ static struct dma_async_tx_descriptor *edma_prep_dma_memcpy(
 	if (len < SZ_64K) {
 		/*
 		 * Transfer size less than 64K can be handled with one paRAM
-		 * slot and with one burst.
-		 * ACNT = length
+		 * slot. ACNT = length
 		 */
 		width = len;
 		pset_len = len;
@@ -1154,13 +1167,8 @@ static struct dma_async_tx_descriptor *edma_prep_dma_memcpy(
 		/*
 		 * Transfer size bigger than 64K will be handled with maximum of
 		 * two paRAM slots.
-		 * slot1: (full_length / 32767) times 32767 bytes bursts.
-		 *	  ACNT = 32767, length1: (full_length / 32767) * 32767
-		 * slot2: the remaining amount of data after slot1.
-		 *	  ACNT = full_length - length1, length2 = ACNT
-		 *
-		 * When the full_length is multibple of 32767 one slot can be
-		 * used to complete the transfer.
+		 * slot1: ACNT = 32767, length1: (length / 32767)
+		 * slot2: the remaining amount of data.
 		 */
 		width = SZ_32K - 1;
 		pset_len = rounddown(len, width);
@@ -1201,8 +1209,8 @@ static struct dma_async_tx_descriptor *edma_prep_dma_memcpy(
 		edesc->pset[0].param.opt |= TCCHEN;
 
 		if (echan->slot[1] < 0) {
-			echan->slot[1] = edma_alloc_slot(echan->ecc,
-							 EDMA_SLOT_ANY);
+			echan->slot[1] =
+				edma_alloc_slot(echan->ecc, EDMA_SLOT_ANY);
 			if (echan->slot[1] < 0) {
 				kfree(edesc);
 				dev_err(dev, "%s: Failed to allocate slot\n",
@@ -1538,13 +1546,7 @@ static irqreturn_t dma_ccerr_handler(int irq, void *data)
 	dev_vdbg(ecc->dev, "dma_ccerr_handler\n");
 
 	if (!edma_error_pending(ecc)) {
-		/*
-		 * The registers indicate no pending error event but the irq
-		 * handler has been called.
-		 * Ask eDMA to re-evaluate the error registers.
-		 */
-		dev_err(ecc->dev, "%s: Error interrupt without error event!\n",
-			__func__);
+		dev_err(ecc->dev, "%s: unmanaged event occurred\n", __func__);
 		edma_write(ecc, EDMA_EEVAL, 1);
 		return IRQ_NONE;
 	}
@@ -1596,6 +1598,32 @@ static irqreturn_t dma_ccerr_handler(int irq, void *data)
 	}
 	edma_write(ecc, EDMA_EEVAL, 1);
 	return IRQ_HANDLED;
+}
+
+static void edma_tc_set_pm_state(struct edma_tc *tc, bool enable)
+{
+	struct platform_device *tc_pdev;
+	int ret;
+
+	if (!IS_ENABLED(CONFIG_OF) || !tc)
+		return;
+
+	tc_pdev = of_find_device_by_node(tc->node);
+	if (!tc_pdev) {
+		pr_err("%s: TPTC device is not found\n", __func__);
+		return;
+	}
+	if (!pm_runtime_enabled(&tc_pdev->dev))
+		pm_runtime_enable(&tc_pdev->dev);
+
+	if (enable)
+		ret = pm_runtime_get_sync(&tc_pdev->dev);
+	else
+		ret = pm_runtime_put_sync(&tc_pdev->dev);
+
+	if (ret < 0)
+		pr_err("%s: pm_runtime_%s_sync() failed for %s\n", __func__,
+		       enable ? "get" : "put", dev_name(&tc_pdev->dev));
 }
 
 /* Alloc channel resources */
@@ -1690,21 +1718,22 @@ static void edma_issue_pending(struct dma_chan *chan)
 }
 
 /*
- * This limit exists to avoid a possible infinite loop when waiting for proof
- * that a particular transfer is completed. This limit can be hit if there
- * are large bursts to/from slow devices or the CPU is never able to catch
- * the DMA hardware idle. On an AM335x transfering 48 bytes from the UART
- * RX-FIFO, as many as 55 loops have been seen.
+ * This limit exists to avoid a possible infinite loop when waiting
+ * for confirmation that a particular transfer is completed. However,
+ * large bursts to/from slow devices might actually require many
+ * loops (in which case busy waiting is bad anyway). On an AM335x
+ * transferring 48 bytes from the UART RX-FIFO, as many as 55 loops
+ * have been seen.
  */
-#define EDMA_MAX_TR_WAIT_LOOPS 1000
+#define EDMA_MAX_TR_WAIT_LOOPS 10000
 
 static u32 edma_residue(struct edma_desc *edesc)
 {
 	bool dst = edesc->direction == DMA_DEV_TO_MEM;
-	int loop_count = EDMA_MAX_TR_WAIT_LOOPS;
-	struct edma_chan *echan = edesc->echan;
 	struct edma_pset *pset = edesc->pset;
+	struct edma_chan *echan = edesc->echan;
 	dma_addr_t done, pos;
+	int loop_count = EDMA_MAX_TR_WAIT_LOOPS;
 	int i;
 
 	/*
@@ -1716,17 +1745,15 @@ static u32 edma_residue(struct edma_desc *edesc)
 	/*
 	 * "pos" may represent a transfer request that is still being
 	 * processed by the EDMACC or EDMATC. We will busy wait until
-	 * any one of the situations occurs:
-	 *   1. the DMA hardware is idle
-	 *   2. a new transfer request is setup
+	 * one of the situations occurs:
+	 *   1. no transfer requests are active
+	 *   2. a different transfer request is being processed
 	 *   3. we hit the loop limit
 	 */
-	while (edma_read(echan->ecc, EDMA_CCSTAT) & EDMA_CCSTAT_ACTV) {
-		/* check if a new transfer request is setup */
-		if (edma_get_position(echan->ecc,
-				      echan->slot[0], dst) != pos) {
+	while (edma_is_active(echan->ecc, echan->slot[0])) {
+		/* check if a different transfer request is active */
+		if (edma_get_position(echan->ecc, echan->slot[0], dst) != pos)
 			break;
-		}
 
 		if (!--loop_count) {
 			dev_dbg_ratelimited(echan->vchan.chan.device->dev,
@@ -1824,10 +1851,11 @@ static void edma_dma_init(struct edma_cc *ecc, bool legacy_mode)
 	dma_cap_zero(s_ddev->cap_mask);
 	dma_cap_set(DMA_SLAVE, s_ddev->cap_mask);
 	dma_cap_set(DMA_CYCLIC, s_ddev->cap_mask);
-	if (ecc->legacy_mode && !memcpy_channels) {
+	if (ecc->legacy_mode && !memcpy_channels &&
+	    /* HACK: Do not allow legacy memcpy for dra7 family */
+	    !of_machine_is_compatible("ti,dra7")) {
 		dev_warn(ecc->dev,
 			 "Legacy memcpy is enabled, things might not work\n");
-
 		dma_cap_set(DMA_MEMCPY, s_ddev->cap_mask);
 		s_ddev->device_prep_dma_memcpy = edma_prep_dma_memcpy;
 		s_ddev->directions = BIT(DMA_MEM_TO_MEM);
@@ -2335,6 +2363,7 @@ static int edma_probe(struct platform_device *pdev)
 				lowest_priority = queue_priority_mapping[i][1];
 				info->default_queue = i;
 			}
+			edma_tc_set_pm_state(&ecc->tc_list[i], true);
 		}
 	}
 
@@ -2360,10 +2389,6 @@ static int edma_probe(struct platform_device *pdev)
 		/* Set entry slot to the dummy slot */
 		edma_set_chmap(&ecc->slave_chans[i], ecc->dummy_slot);
 	}
-
-	ecc->dma_slave.filter.map = info->slave_map;
-	ecc->dma_slave.filter.mapcnt = info->slavecnt;
-	ecc->dma_slave.filter.fn = edma_filter_fn;
 
 	ret = dma_async_device_register(&ecc->dma_slave);
 	if (ret) {
@@ -2430,9 +2455,6 @@ static int edma_pm_resume(struct device *dev)
 	int i;
 	s8 (*queue_priority_mapping)[2];
 
-	/* re initialize dummy slot to dummy param set */
-	edma_write_slot(ecc, ecc->dummy_slot, &dummy_paramset);
-
 	queue_priority_mapping = ecc->info->queue_priority_mapping;
 
 	/* Event queue priority mapping */
@@ -2473,8 +2495,7 @@ static struct platform_driver edma_driver = {
 
 static int edma_tptc_probe(struct platform_device *pdev)
 {
-	pm_runtime_enable(&pdev->dev);
-	return pm_runtime_get_sync(&pdev->dev);
+	return 0;
 }
 
 static struct platform_driver edma_tptc_driver = {

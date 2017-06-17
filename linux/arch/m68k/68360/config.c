@@ -154,7 +154,8 @@ void __init config_BSP(char *command, int len)
 #if defined(CONFIG_UCQUICC) && 0
   printk(KERN_INFO "uCquicc serial string [%s]\n",getserialnum());
   p = scc1_hwaddr = gethwaddr(0);
-  printk(KERN_INFO "uCquicc hwaddr %pM\n", p);
+  printk(KERN_INFO "uCquicc hwaddr %.2x:%.2x:%.2x:%.2x:%.2x:%.2x\n",
+         p[0], p[1], p[2], p[3], p[4], p[5]);
 
   p = getbenv("APPEND");
   if (p)

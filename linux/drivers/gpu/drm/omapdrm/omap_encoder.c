@@ -146,9 +146,8 @@ static void omap_encoder_enable(struct drm_encoder *encoder)
 
 	r = dssdrv->enable(dssdev);
 	if (r)
-		dev_err(encoder->dev->dev,
-			"Failed to enable display '%s': %d\n",
-			dssdev->name, r);
+		dev_err(encoder->dev->dev, "Failed to enable display '%s'\n",
+			dssdev->name);
 }
 
 static int omap_encoder_atomic_check(struct drm_encoder *encoder,

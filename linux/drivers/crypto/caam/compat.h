@@ -23,7 +23,6 @@
 #include <linux/types.h>
 #include <linux/debugfs.h>
 #include <linux/circ_buf.h>
-#include <linux/clk.h>
 #include <net/xfrm.h>
 
 #include <crypto/algapi.h>
@@ -33,7 +32,7 @@
 #include <crypto/des.h>
 #include <crypto/sha.h>
 #include <crypto/md5.h>
-#include <crypto/internal/aead.h>
+#include <crypto/aead.h>
 #include <crypto/authenc.h>
 #include <crypto/scatterwalk.h>
 #include <crypto/internal/skcipher.h>

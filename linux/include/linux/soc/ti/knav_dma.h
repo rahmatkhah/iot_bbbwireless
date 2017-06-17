@@ -177,7 +177,6 @@ static inline bool knav_dma_device_ready(void)
 {
 	return false;
 }
-
 static inline int knav_dma_get_flow(void *channel)
 {
 	return -EINVAL;

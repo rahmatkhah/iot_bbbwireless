@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2017 Junjiro R. Okajima
+ * Copyright (C) 2005-2016 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -99,6 +99,7 @@ int aufs_release_nondir(struct inode *inode __maybe_unused, struct file *file)
 {
 	struct au_finfo *finfo;
 	aufs_bindex_t bindex;
+	int delayed;
 
 	finfo = au_fi(file);
 	au_sphl_del(&finfo->fi_hlist,
@@ -107,7 +108,8 @@ int aufs_release_nondir(struct inode *inode __maybe_unused, struct file *file)
 	if (bindex >= 0)
 		au_set_h_fptr(file, bindex, NULL);
 
-	au_finfo_fin(file);
+	delayed = (current->flags & PF_KTHREAD) || in_interrupt();
+	au_finfo_fin(file, delayed);
 	return 0;
 }
 
@@ -225,11 +227,12 @@ static void au_write_post(struct inode *inode, struct file *h_file,
 	h_inode = file_inode(h_file);
 	inode->i_mode = h_inode->i_mode;
 	ii_write_unlock(inode);
+	fput(h_file);
+
 	/* AuDbg("blks %llu, %llu\n", (u64)blks, (u64)h_inode->i_blocks); */
 	if (written > 0)
 		au_fhsm_wrote(inode->i_sb, wpre->btop,
 			      /*force*/h_inode->i_blocks > wpre->blks);
-	fput(h_file);
 }
 
 static ssize_t aufs_read(struct file *file, char __user *buf, size_t count,

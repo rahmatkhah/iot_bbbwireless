@@ -104,7 +104,17 @@ struct omap_gem_object {
 	 * sync-object allocated on demand (if needed)
 	 *
 	 * Per-buffer sync-object for tracking pending and completed hw/dma
-	 * read and write operations.
+	 * read and write operations.  The layout in memory is dictated by
+	 * the SGX firmware, which uses this information to stall the command
+	 * stream if a surface is not ready yet.
+	 *
+	 * Note that when buffer is used by SGX, the sync-object needs to be
+	 * allocated from a special heap of sync-objects.  This way many sync
+	 * objects can be packed in a page, and not waste GPU virtual address
+	 * space.  Because of this we have to have a omap_gem_set_sync_object()
+	 * API to allow replacement of the syncobj after it has (potentially)
+	 * already been allocated.  A bit ugly but I haven't thought of a
+	 * better alternative.
 	 */
 	struct {
 		uint32_t write_pending;
@@ -268,8 +278,7 @@ static int omap_gem_attach_pages(struct drm_gem_object *obj)
 					0, PAGE_SIZE, DMA_BIDIRECTIONAL);
 
 			if (dma_mapping_error(dev->dev, addrs[i])) {
-				dev_warn(dev->dev,
-					"%s: failed to map page\n", __func__);
+				dev_warn(dev->dev, "omap_gem_attach_pages: dma_map_page failed\n");
 
 				for (i = i - 1; i >= 0; --i) {
 					dma_unmap_page(dev->dev, addrs[i],
@@ -292,9 +301,9 @@ static int omap_gem_attach_pages(struct drm_gem_object *obj)
 	omap_obj->pages = pages;
 
 	return 0;
-
 free_addrs:
 	kfree(addrs);
+
 free_pages:
 	drm_gem_put_pages(obj, pages, true, false);
 
@@ -657,8 +666,7 @@ int omap_gem_dumb_create(struct drm_file *file, struct drm_device *dev,
 {
 	union omap_gem_size gsize;
 
-	args->pitch = DIV_ROUND_UP(args->width * args->bpp, 8);
-
+	args->pitch = align_pitch(0, args->width, args->bpp);
 	args->size = PAGE_ALIGN(args->pitch * args->height);
 
 	gsize = (union omap_gem_size){
@@ -699,7 +707,6 @@ fail:
 	return ret;
 }
 
-#ifdef CONFIG_DRM_FBDEV_EMULATION
 /* Set scrolling position.  This allows us to implement fast scrolling
  * for console.
  *
@@ -736,7 +743,6 @@ fail:
 
 	return ret;
 }
-#endif
 
 /* -----------------------------------------------------------------------------
  * Memory Management & DMA Sync
@@ -789,9 +795,7 @@ void omap_gem_dma_sync(struct drm_gem_object *obj,
 						PAGE_SIZE, DMA_BIDIRECTIONAL);
 
 				if (dma_mapping_error(dev->dev, addr)) {
-					dev_warn(dev->dev,
-						"%s: failed to map page\n",
-						__func__);
+					dev_warn(dev->dev, "omap_gem_dma_sync: dma_map_page failed\n");
 					break;
 				}
 
@@ -977,7 +981,6 @@ int omap_gem_put_pages(struct drm_gem_object *obj)
 	return 0;
 }
 
-#ifdef CONFIG_DRM_FBDEV_EMULATION
 /* Get kernel virtual address for CPU access.. this more or less only
  * exists for omap_fbdev.  This should be called with struct_mutex
  * held.
@@ -996,7 +999,6 @@ void *omap_gem_vaddr(struct drm_gem_object *obj)
 	}
 	return omap_obj->vaddr;
 }
-#endif
 
 /* -----------------------------------------------------------------------------
  * Power Management
@@ -1238,7 +1240,7 @@ int omap_gem_op_sync(struct drm_gem_object *obj, enum omap_gem_op op)
  * is currently blocked..  fxn() can be called from any context
  *
  * (TODO for now fxn is called back from whichever context calls
- * omap_gem_op_finish().. but this could be better defined later
+ * omap_gem_op_update().. but this could be better defined later
  * if needed)
  *
  * TODO more code in common w/ _sync()..

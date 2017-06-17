@@ -83,6 +83,8 @@ static inline void __cpu_die(unsigned int cpu)
 extern void play_dead(void);
 #endif
 
+extern asmlinkage void smp_call_function_interrupt(void);
+
 static inline void arch_send_call_function_single_ipi(int cpu)
 {
 	extern struct plat_smp_ops *mp_ops;	/* private */

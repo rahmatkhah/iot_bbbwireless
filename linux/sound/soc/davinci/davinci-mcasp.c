@@ -89,6 +89,7 @@ struct davinci_mcasp {
 	u8	*serial_dir;
 	u8	version;
 	u8	bclk_div;
+	u16	bclk_lrclk_ratio;
 	int	streams;
 	u32	irq_request[2];
 	int	dma_request[2];
@@ -545,9 +546,11 @@ out:
 	return ret;
 }
 
-static int __davinci_mcasp_set_clkdiv(struct davinci_mcasp *mcasp, int div_id,
+static int __davinci_mcasp_set_clkdiv(struct snd_soc_dai *dai, int div_id,
 				      int div, bool explicit)
 {
+	struct davinci_mcasp *mcasp = snd_soc_dai_get_drvdata(dai);
+
 	pm_runtime_get_sync(mcasp->dev);
 	switch (div_id) {
 	case MCASP_CLKDIV_AUXCLK:			/* MCLK divider */
@@ -566,22 +569,8 @@ static int __davinci_mcasp_set_clkdiv(struct davinci_mcasp *mcasp, int div_id,
 			mcasp->bclk_div = div;
 		break;
 
-	case MCASP_CLKDIV_BCLK_FS_RATIO:
-		/*
-		 * BCLK/LRCLK ratio descries how many bit-clock cycles
-		 * fit into one frame. The clock ratio is given for a
-		 * full period of data (for I2S format both left and
-		 * right channels), so it has to be divided by number
-		 * of tdm-slots (for I2S - divided by 2).
-		 * Instead of storing this ratio, we calculate a new
-		 * tdm_slot width by dividing the the ratio by the
-		 * number of configured tdm slots.
-		 */
-		mcasp->slot_width = div / mcasp->tdm_slots;
-		if (div % mcasp->tdm_slots)
-			dev_warn(mcasp->dev,
-				 "%s(): BCLK/LRCLK %d is not divisible by %d tdm slots",
-				 __func__, div, mcasp->tdm_slots);
+	case MCASP_CLKDIV_BCLK_FS_RATIO:	/* BCLK/LRCLK ratio */
+		mcasp->bclk_lrclk_ratio = div;
 		break;
 
 	default:
@@ -595,9 +584,7 @@ static int __davinci_mcasp_set_clkdiv(struct davinci_mcasp *mcasp, int div_id,
 static int davinci_mcasp_set_clkdiv(struct snd_soc_dai *dai, int div_id,
 				    int div)
 {
-	struct davinci_mcasp *mcasp = snd_soc_dai_get_drvdata(dai);
-
-	return __davinci_mcasp_set_clkdiv(mcasp, div_id, div, 1);
+	return __davinci_mcasp_set_clkdiv(dai, div_id, div, 1);
 }
 
 static int davinci_mcasp_set_sysclk(struct snd_soc_dai *dai, int clk_id,
@@ -721,13 +708,11 @@ static int davinci_mcasp_set_tdm_slot(struct snd_soc_dai *dai,
 }
 
 static int davinci_config_channel_size(struct davinci_mcasp *mcasp,
-				       int sample_width)
+				       int word_length)
 {
 	u32 fmt;
-	u32 tx_rotate = (sample_width / 4) & 0x7;
-	u32 mask = (1ULL << sample_width) - 1;
-	u32 slot_width = sample_width;
-
+	u32 tx_rotate = (word_length / 4) & 0x7;
+	u32 mask = (1ULL << word_length) - 1;
 	/*
 	 * For captured data we should not rotate, inversion and masking is
 	 * enoguh to get the data to the right position:
@@ -740,23 +725,31 @@ static int davinci_config_channel_size(struct davinci_mcasp *mcasp,
 	u32 rx_rotate = 0;
 
 	/*
-	 * Setting the tdm slot width either with set_clkdiv() or
-	 * set_tdm_slot() allows us to for example send 32 bits per
-	 * channel to the codec, while only 16 of them carry audio
-	 * payload.
+	 * if s BCLK-to-LRCLK ratio has been configured via the set_clkdiv()
+	 * callback, take it into account here. That allows us to for example
+	 * send 32 bits per channel to the codec, while only 16 of them carry
+	 * audio payload.
+	 * The clock ratio is given for a full period of data (for I2S format
+	 * both left and right channels), so it has to be divided by number of
+	 * tdm-slots (for I2S - divided by 2).
 	 */
-	if (mcasp->slot_width) {
+	if (mcasp->bclk_lrclk_ratio) {
+		u32 slot_length = mcasp->bclk_lrclk_ratio / mcasp->tdm_slots;
+
 		/*
-		 * When we have more bclk then it is needed for the
-		 * data, we need to use the rotation to move the
-		 * received samples to have correct alignment.
+		 * When we have more bclk then it is needed for the data, we
+		 * need to use the rotation to move the received samples to have
+		 * correct alignment.
 		 */
-		slot_width = mcasp->slot_width;
-		rx_rotate = (slot_width - sample_width) / 4;
+		rx_rotate = (slot_length - word_length) / 4;
+		word_length = slot_length;
+	} else if (mcasp->slot_width) {
+		rx_rotate = (mcasp->slot_width - word_length) / 4;
+		word_length = mcasp->slot_width;
 	}
 
 	/* mapping of the XSSZ bit-field as described in the datasheet */
-	fmt = (slot_width >> 1) - 1;
+	fmt = (word_length >> 1) - 1;
 
 	if (mcasp->op_mode != DAVINCI_MCASP_DIT_MODE) {
 		mcasp_mod_bits(mcasp, DAVINCI_MCASP_RXFMT_REG, RXSSZ(fmt),
@@ -1025,53 +1018,27 @@ static int mcasp_dit_hw_param(struct davinci_mcasp *mcasp,
 }
 
 static int davinci_mcasp_calc_clk_div(struct davinci_mcasp *mcasp,
-				      unsigned int bclk_freq, bool set)
+				      unsigned int bclk_freq,
+				      int *error_ppm)
 {
-	int error_ppm;
-	unsigned int sysclk_freq = mcasp->sysclk_freq;
-	u32 reg = mcasp_get_reg(mcasp, DAVINCI_MCASP_AHCLKXCTL_REG);
-	int div = sysclk_freq / bclk_freq;
-	int rem = sysclk_freq % bclk_freq;
-	int aux_div = 1;
-
-	if (div > (ACLKXDIV_MASK + 1)) {
-		if (reg & AHCLKXE) {
-			aux_div = div / (ACLKXDIV_MASK + 1);
-			if (div % (ACLKXDIV_MASK + 1))
-				aux_div++;
-
-			sysclk_freq /= aux_div;
-			div = sysclk_freq / bclk_freq;
-			rem = sysclk_freq % bclk_freq;
-		} else if (set) {
-			dev_warn(mcasp->dev, "Too fast reference clock (%u)\n",
-				 sysclk_freq);
-		}
-	}
+	int div = mcasp->sysclk_freq / bclk_freq;
+	int rem = mcasp->sysclk_freq % bclk_freq;
 
 	if (rem != 0) {
 		if (div == 0 ||
-		    ((sysclk_freq / div) - bclk_freq) >
-		    (bclk_freq - (sysclk_freq / (div+1)))) {
+		    ((mcasp->sysclk_freq / div) - bclk_freq) >
+		    (bclk_freq - (mcasp->sysclk_freq / (div+1)))) {
 			div++;
 			rem = rem - bclk_freq;
 		}
 	}
-	error_ppm = (div*1000000 + (int)div64_long(1000000LL*rem,
-		     (int)bclk_freq)) / div - 1000000;
+	if (error_ppm)
+		*error_ppm =
+			(div*1000000 + (int)div64_long(1000000LL*rem,
+						       (int)bclk_freq))
+			/div - 1000000;
 
-	if (set) {
-		if (error_ppm)
-			dev_info(mcasp->dev, "Sample-rate is off by %d PPM\n",
-				 error_ppm);
-
-		__davinci_mcasp_set_clkdiv(mcasp, MCASP_CLKDIV_BCLK, div, 0);
-		if (reg & AHCLKXE)
-			__davinci_mcasp_set_clkdiv(mcasp, MCASP_CLKDIV_AUXCLK,
-						   aux_div, 0);
-	}
-
-	return error_ppm;
+	return div;
 }
 
 static int davinci_mcasp_hw_params(struct snd_pcm_substream *substream,
@@ -1096,11 +1063,18 @@ static int davinci_mcasp_hw_params(struct snd_pcm_substream *substream,
 		int slots = mcasp->tdm_slots;
 		int rate = params_rate(params);
 		int sbits = params_width(params);
+		int ppm, div;
 
 		if (mcasp->slot_width)
 			sbits = mcasp->slot_width;
 
-		davinci_mcasp_calc_clk_div(mcasp, rate * sbits * slots, true);
+		div = davinci_mcasp_calc_clk_div(mcasp, rate*sbits*slots,
+						 &ppm);
+		if (ppm)
+			dev_info(mcasp->dev, "Sample-rate is off by %d PPM\n",
+				 ppm);
+
+		__davinci_mcasp_set_clkdiv(cpu_dai, 1, div, 0);
 	}
 
 	ret = mcasp_common_hw_param(mcasp, substream->stream,
@@ -1211,8 +1185,7 @@ static int davinci_mcasp_hw_rule_rate(struct snd_pcm_hw_params *params,
 				davinci_mcasp_dai_rates[i];
 			int ppm;
 
-			ppm = davinci_mcasp_calc_clk_div(rd->mcasp, bclk_freq,
-							 false);
+			davinci_mcasp_calc_clk_div(rd->mcasp, bclk_freq, &ppm);
 			if (abs(ppm) < DAVINCI_MAX_RATE_ERROR_PPM) {
 				if (range.empty) {
 					range.min = davinci_mcasp_dai_rates[i];
@@ -1251,9 +1224,8 @@ static int davinci_mcasp_hw_rule_format(struct snd_pcm_hw_params *params,
 			if (rd->mcasp->slot_width)
 				sbits = rd->mcasp->slot_width;
 
-			ppm = davinci_mcasp_calc_clk_div(rd->mcasp,
-							 sbits * slots * rate,
-							 false);
+			davinci_mcasp_calc_clk_div(rd->mcasp, sbits*slots*rate,
+						   &ppm);
 			if (abs(ppm) < DAVINCI_MAX_RATE_ERROR_PPM) {
 				snd_mask_set(&nfmt, i);
 				count++;
@@ -1277,14 +1249,10 @@ static int davinci_mcasp_startup(struct snd_pcm_substream *substream,
 	int i, dir;
 	int tdm_slots = mcasp->tdm_slots;
 
-	/* Do not allow more then one stream per direction */
-	if (mcasp->substreams[substream->stream])
-		return -EBUSY;
-
-	mcasp->substreams[substream->stream] = substream;
-
 	if (mcasp->tdm_mask[substream->stream])
 		tdm_slots = hweight32(mcasp->tdm_mask[substream->stream]);
+
+	mcasp->substreams[substream->stream] = substream;
 
 	if (mcasp->op_mode == DAVINCI_MCASP_DIT_MODE)
 		return 0;
@@ -1498,7 +1466,6 @@ static struct snd_soc_dai_driver davinci_mcasp_dai[] = {
 		.ops 		= &davinci_mcasp_dai_ops,
 
 		.symmetric_samplebits	= 1,
-		.symmetric_rates	= 1,
 	},
 	{
 		.name		= "davinci-mcasp.1",
@@ -1538,9 +1505,8 @@ static struct davinci_mcasp_pdata am33xx_mcasp_pdata = {
 };
 
 static struct davinci_mcasp_pdata dra7_mcasp_pdata = {
-	/* The CFG port offset will be calculated if it is needed */
-	.tx_dma_offset = 0,
-	.rx_dma_offset = 0,
+	.tx_dma_offset = 0x200,
+	.rx_dma_offset = 0x284,
 	.version = MCASP_VERSION_4,
 };
 
@@ -1578,8 +1544,6 @@ static int mcasp_reparent_fck(struct platform_device *pdev)
 	parent_name = of_get_property(node, "fck_parent", NULL);
 	if (!parent_name)
 		return 0;
-
-	dev_warn(&pdev->dev, "Update the bindings to use assigned-clocks!\n");
 
 	gfclk = clk_get(&pdev->dev, "fck");
 	if (IS_ERR(gfclk)) {
@@ -1624,14 +1588,7 @@ static struct davinci_mcasp_pdata *davinci_mcasp_set_pdata_from_of(
 		pdata = pdev->dev.platform_data;
 		return pdata;
 	} else if (match) {
-		pdata = devm_kmemdup(&pdev->dev, match->data, sizeof(*pdata),
-				     GFP_KERNEL);
-		if (!pdata) {
-			dev_err(&pdev->dev,
-				"Failed to allocate memory for pdata\n");
-			ret = -ENOMEM;
-			return pdata;
-		}
+		pdata = (struct davinci_mcasp_pdata*) match->data;
 	} else {
 		/* control shouldn't reach here. something is wrong */
 		ret = -EINVAL;
@@ -1767,52 +1724,6 @@ static int davinci_mcasp_get_dma_type(struct davinci_mcasp *mcasp)
 	return PCM_EDMA;
 }
 
-static u32 davinci_mcasp_txdma_offset(struct davinci_mcasp_pdata *pdata)
-{
-	int i;
-	u32 offset = 0;
-
-	if (pdata->version != MCASP_VERSION_4)
-		return pdata->tx_dma_offset;
-
-	for (i = 0; i < pdata->num_serializer; i++) {
-		if (pdata->serial_dir[i] == TX_MODE) {
-			if (!offset) {
-				offset = DAVINCI_MCASP_TXBUF_REG(i);
-			} else {
-				pr_err("%s: Only one serializer allowed!\n",
-				       __func__);
-				break;
-			}
-		}
-	}
-
-	return offset;
-}
-
-static u32 davinci_mcasp_rxdma_offset(struct davinci_mcasp_pdata *pdata)
-{
-	int i;
-	u32 offset = 0;
-
-	if (pdata->version != MCASP_VERSION_4)
-		return pdata->rx_dma_offset;
-
-	for (i = 0; i < pdata->num_serializer; i++) {
-		if (pdata->serial_dir[i] == RX_MODE) {
-			if (!offset) {
-				offset = DAVINCI_MCASP_RXBUF_REG(i);
-			} else {
-				pr_err("%s: Only one serializer allowed!\n",
-				       __func__);
-				break;
-			}
-		}
-	}
-
-	return offset;
-}
-
 #if IS_ENABLED(CONFIG_DISPLAY_DRA7EVM_ENCODER_TPD12S015)
 #define DRA7_MCASP_HDMI_SEL_GPIO	(1 << 2)
 int dra7_mcasp_hdmi_gpio_get(struct platform_device *pdev)
@@ -1911,7 +1822,7 @@ EXPORT_SYMBOL(dra7_mcasp_hdmi_gpio_set);
 static int davinci_mcasp_probe(struct platform_device *pdev)
 {
 	struct snd_dmaengine_dai_dma_data *dma_data;
-	struct resource *mem, *res, *dat;
+	struct resource *mem, *ioarea, *res, *dat;
 	struct davinci_mcasp_pdata *pdata;
 	struct davinci_mcasp *mcasp;
 	char *irq_name;
@@ -1950,12 +1861,21 @@ static int davinci_mcasp_probe(struct platform_device *pdev)
 	if (pdata->version == MCASP_VERSION_4 && mem->start == 0x4847c000)
 		mcasp->is_mcasp8 = true;
 #endif
-
-	mcasp->base = devm_ioremap_resource(&pdev->dev, mem);
-	if (IS_ERR(mcasp->base))
-		return PTR_ERR(mcasp->base);
+	ioarea = devm_request_mem_region(&pdev->dev, mem->start,
+			resource_size(mem), pdev->name);
+	if (!ioarea) {
+		dev_err(&pdev->dev, "Audio region already claimed\n");
+		return -EBUSY;
+	}
 
 	pm_runtime_enable(&pdev->dev);
+
+	mcasp->base = devm_ioremap(&pdev->dev, mem->start, resource_size(mem));
+	if (!mcasp->base) {
+		dev_err(&pdev->dev, "ioremap failed\n");
+		ret = -ENOMEM;
+		goto err;
+	}
 
 	mcasp->op_mode = pdata->op_mode;
 	/* sanity check for tdm slots parameter */
@@ -1988,7 +1908,7 @@ static int davinci_mcasp_probe(struct platform_device *pdev)
 
 	irq = platform_get_irq_byname(pdev, "common");
 	if (irq >= 0) {
-		irq_name = devm_kasprintf(&pdev->dev, GFP_KERNEL, "%s_common",
+		irq_name = devm_kasprintf(&pdev->dev, GFP_KERNEL, "%s_common\n",
 					  dev_name(&pdev->dev));
 		ret = devm_request_threaded_irq(&pdev->dev, irq, NULL,
 						davinci_mcasp_common_irq_handler,
@@ -2005,7 +1925,7 @@ static int davinci_mcasp_probe(struct platform_device *pdev)
 
 	irq = platform_get_irq_byname(pdev, "rx");
 	if (irq >= 0) {
-		irq_name = devm_kasprintf(&pdev->dev, GFP_KERNEL, "%s_rx",
+		irq_name = devm_kasprintf(&pdev->dev, GFP_KERNEL, "%s_rx\n",
 					  dev_name(&pdev->dev));
 		ret = devm_request_threaded_irq(&pdev->dev, irq, NULL,
 						davinci_mcasp_rx_irq_handler,
@@ -2020,7 +1940,7 @@ static int davinci_mcasp_probe(struct platform_device *pdev)
 
 	irq = platform_get_irq_byname(pdev, "tx");
 	if (irq >= 0) {
-		irq_name = devm_kasprintf(&pdev->dev, GFP_KERNEL, "%s_tx",
+		irq_name = devm_kasprintf(&pdev->dev, GFP_KERNEL, "%s_tx\n",
 					  dev_name(&pdev->dev));
 		ret = devm_request_threaded_irq(&pdev->dev, irq, NULL,
 						davinci_mcasp_tx_irq_handler,
@@ -2038,13 +1958,10 @@ static int davinci_mcasp_probe(struct platform_device *pdev)
 		mcasp->dat_port = true;
 
 	dma_data = &mcasp->dma_data[SNDRV_PCM_STREAM_PLAYBACK];
-	if (dat) {
+	if (dat)
 		dma_data->addr = dat->start;
-	} else {
-		dma_data->addr = mem->start + davinci_mcasp_txdma_offset(pdata);
-		/* WFIFO is not accessible from CFG port */
-		mcasp->txnumevt = 0;
-	}
+	else
+		dma_data->addr = mem->start + pdata->tx_dma_offset;
 
 	dma = &mcasp->dma_request[SNDRV_PCM_STREAM_PLAYBACK];
 	res = platform_get_resource(pdev, IORESOURCE_DMA, 0);
@@ -2062,14 +1979,10 @@ static int davinci_mcasp_probe(struct platform_device *pdev)
 	/* RX is not valid in DIT mode */
 	if (mcasp->op_mode != DAVINCI_MCASP_DIT_MODE) {
 		dma_data = &mcasp->dma_data[SNDRV_PCM_STREAM_CAPTURE];
-		if (dat) {
+		if (dat)
 			dma_data->addr = dat->start;
-		} else {
-			dma_data->addr =
-				mem->start + davinci_mcasp_rxdma_offset(pdata);
-			/* RFIFO is not accessible from CFG port */
-			mcasp->rxnumevt = 0;
-		}
+		else
+			dma_data->addr = mem->start + pdata->rx_dma_offset;
 
 		dma = &mcasp->dma_request[SNDRV_PCM_STREAM_CAPTURE];
 		res = platform_get_resource(pdev, IORESOURCE_DMA, 1);

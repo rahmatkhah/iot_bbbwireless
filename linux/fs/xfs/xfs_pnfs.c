@@ -181,11 +181,6 @@ xfs_fs_map_blocks(
 		ASSERT(imap.br_startblock != DELAYSTARTBLOCK);
 
 		if (!nimaps || imap.br_startblock == HOLESTARTBLOCK) {
-			/*
-			 * xfs_iomap_write_direct() expects to take ownership of
-			 * the shared ilock.
-			 */
-			xfs_ilock(ip, XFS_ILOCK_SHARED);
 			error = xfs_iomap_write_direct(ip, offset, length,
 						       &imap, nimaps);
 			if (error)
@@ -311,7 +306,7 @@ xfs_fs_commit_blocks(
 	tp = xfs_trans_alloc(mp, XFS_TRANS_SETATTR_NOT_SIZE);
 	error = xfs_trans_reserve(tp, &M_RES(mp)->tr_ichange, 0, 0);
 	if (error) {
-		xfs_trans_cancel(tp);
+		xfs_trans_cancel(tp, 0);
 		goto out_drop_iolock;
 	}
 
@@ -326,7 +321,7 @@ xfs_fs_commit_blocks(
 	}
 
 	xfs_trans_set_sync(tp);
-	error = xfs_trans_commit(tp);
+	error = xfs_trans_commit(tp, 0);
 
 out_drop_iolock:
 	xfs_iunlock(ip, XFS_IOLOCK_EXCL);

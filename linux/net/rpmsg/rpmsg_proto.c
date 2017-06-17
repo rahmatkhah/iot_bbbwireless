@@ -1,7 +1,7 @@
 /*
  * AF_RPMSG: Remote processor messaging sockets
  *
- * Copyright (C) 2011-2016 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C) 2011-2015 Texas Instruments, Inc.
  *
  * Ohad Ben-Cohen <ohad@wizery.com>
  * Robert Tivy <rtivy@ti.com>
@@ -504,7 +504,7 @@ static int rpmsg_sock_create(struct net *net, struct socket *sock, int proto,
 	if (proto != 0)
 		return -EPROTONOSUPPORT;
 
-	sk = sk_alloc(net, PF_RPMSG, GFP_KERNEL, &rpmsg_proto, kern);
+	sk = sk_alloc(net, PF_RPMSG, GFP_KERNEL, &rpmsg_proto);
 	if (!sk)
 		return -ENOMEM;
 
@@ -749,6 +749,7 @@ MODULE_DEVICE_TABLE(rpmsg, rpmsg_proto_id_table);
 
 static struct rpmsg_driver rpmsg_proto_driver = {
 	.drv.name	= KBUILD_MODNAME,
+	.drv.owner	= THIS_MODULE,
 	.id_table	= rpmsg_proto_id_table,
 	.probe		= rpmsg_proto_probe,
 	.callback	= rpmsg_proto_cb,

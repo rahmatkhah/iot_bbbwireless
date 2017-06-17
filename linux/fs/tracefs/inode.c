@@ -340,12 +340,8 @@ static struct dentry *start_creating(const char *name, struct dentry *parent)
 		dput(dentry);
 		dentry = ERR_PTR(-EEXIST);
 	}
-
-	if (IS_ERR(dentry)) {
+	if (IS_ERR(dentry))
 		mutex_unlock(&parent->d_inode->i_mutex);
-		simple_release_fs(&tracefs_mount, &tracefs_mount_count);
-	}
-
 	return dentry;
 }
 
@@ -500,11 +496,16 @@ struct dentry *tracefs_create_instance_dir(const char *name, struct dentry *pare
 	return dentry;
 }
 
+static inline int tracefs_positive(struct dentry *dentry)
+{
+	return dentry->d_inode && !d_unhashed(dentry);
+}
+
 static int __tracefs_remove(struct dentry *dentry, struct dentry *parent)
 {
 	int ret = 0;
 
-	if (simple_positive(dentry)) {
+	if (tracefs_positive(dentry)) {
 		if (dentry->d_inode) {
 			dget(dentry);
 			switch (dentry->d_inode->i_mode & S_IFMT) {
@@ -581,7 +582,7 @@ void tracefs_remove_recursive(struct dentry *dentry)
 	 */
 	spin_lock(&parent->d_lock);
 	list_for_each_entry(child, &parent->d_subdirs, d_child) {
-		if (!simple_positive(child))
+		if (!tracefs_positive(child))
 			continue;
 
 		/* perhaps simple_empty(child) makes more sense */
@@ -602,7 +603,7 @@ void tracefs_remove_recursive(struct dentry *dentry)
 		 * from d_subdirs. When releasing the parent->d_lock we can
 		 * no longer trust that the next pointer is valid.
 		 * Restart the loop. We'll skip this one with the
-		 * simple_positive() check.
+		 * tracefs_positive() check.
 		 */
 		goto loop;
 	}

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2017 Junjiro R. Okajima
+ * Copyright (C) 2005-2016 Junjiro R. Okajima
  *
  * This program, aufs is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -46,7 +46,7 @@ static void aufs_destroy_inode_cb(struct rcu_head *head)
 {
 	struct inode *inode = container_of(head, struct inode, i_rcu);
 
-	au_cache_free_icntnr(container_of(inode, struct au_icntnr, vfs_inode));
+	au_cache_dfree_icntnr(container_of(inode, struct au_icntnr, vfs_inode));
 }
 
 static void aufs_destroy_inode(struct inode *inode)
@@ -107,42 +107,26 @@ static int au_show_brs(struct seq_file *seq, struct super_block *sb)
 		err = au_seq_path(seq, &path);
 		if (!err) {
 			au_optstr_br_perm(&perm, br->br_perm);
-			seq_printf(seq, "=%s", perm.a);
-			if (bindex != bbot)
-				seq_putc(seq, ':');
+			err = seq_printf(seq, "=%s", perm.a);
+			if (err == -1)
+				err = -E2BIG;
 		}
+		if (!err && bindex != bbot)
+			err = seq_putc(seq, ':');
 	}
-	if (unlikely(err || seq_has_overflowed(seq)))
-		err = -E2BIG;
 
 	return err;
-}
-
-static void au_gen_fmt(char *fmt, int len __maybe_unused, const char *pat,
-		       const char *append)
-{
-	char *p;
-
-	p = fmt;
-	while (*pat != ':')
-		*p++ = *pat++;
-	*p++ = *pat++;
-	strcpy(p, append);
-	AuDebugOn(strlen(fmt) >= len);
 }
 
 static void au_show_wbr_create(struct seq_file *m, int v,
 			       struct au_sbinfo *sbinfo)
 {
 	const char *pat;
-	char fmt[32];
-	struct au_wbr_mfs *mfs;
 
 	AuRwMustAnyLock(&sbinfo->si_rwsem);
 
 	seq_puts(m, ",create=");
 	pat = au_optstr_wbr_create(v);
-	mfs = &sbinfo->si_wbr_mfs;
 	switch (v) {
 	case AuWbrCreate_TDP:
 	case AuWbrCreate_RR:
@@ -150,28 +134,36 @@ static void au_show_wbr_create(struct seq_file *m, int v,
 	case AuWbrCreate_PMFS:
 		seq_puts(m, pat);
 		break;
-	case AuWbrCreate_MFSRR:
-	case AuWbrCreate_TDMFS:
-	case AuWbrCreate_PMFSRR:
-		au_gen_fmt(fmt, sizeof(fmt), pat, "%llu");
-		seq_printf(m, fmt, mfs->mfsrr_watermark);
-		break;
 	case AuWbrCreate_MFSV:
-	case AuWbrCreate_PMFSV:
-		au_gen_fmt(fmt, sizeof(fmt), pat, "%lu");
-		seq_printf(m, fmt,
-			   jiffies_to_msecs(mfs->mfs_expire)
+		seq_printf(m, /*pat*/"mfs:%lu",
+			   jiffies_to_msecs(sbinfo->si_wbr_mfs.mfs_expire)
 			   / MSEC_PER_SEC);
 		break;
-	case AuWbrCreate_MFSRRV:
-	case AuWbrCreate_TDMFSV:
-	case AuWbrCreate_PMFSRRV:
-		au_gen_fmt(fmt, sizeof(fmt), pat, "%llu:%lu");
-		seq_printf(m, fmt, mfs->mfsrr_watermark,
-			   jiffies_to_msecs(mfs->mfs_expire) / MSEC_PER_SEC);
+	case AuWbrCreate_PMFSV:
+		seq_printf(m, /*pat*/"pmfs:%lu",
+			   jiffies_to_msecs(sbinfo->si_wbr_mfs.mfs_expire)
+			   / MSEC_PER_SEC);
 		break;
-	default:
-		BUG();
+	case AuWbrCreate_MFSRR:
+		seq_printf(m, /*pat*/"mfsrr:%llu",
+			   sbinfo->si_wbr_mfs.mfsrr_watermark);
+		break;
+	case AuWbrCreate_MFSRRV:
+		seq_printf(m, /*pat*/"mfsrr:%llu:%lu",
+			   sbinfo->si_wbr_mfs.mfsrr_watermark,
+			   jiffies_to_msecs(sbinfo->si_wbr_mfs.mfs_expire)
+			   / MSEC_PER_SEC);
+		break;
+	case AuWbrCreate_PMFSRR:
+		seq_printf(m, /*pat*/"pmfsrr:%llu",
+			   sbinfo->si_wbr_mfs.mfsrr_watermark);
+		break;
+	case AuWbrCreate_PMFSRRV:
+		seq_printf(m, /*pat*/"pmfsrr:%llu:%lu",
+			   sbinfo->si_wbr_mfs.mfsrr_watermark,
+			   jiffies_to_msecs(sbinfo->si_wbr_mfs.mfs_expire)
+			   / MSEC_PER_SEC);
+		break;
 	}
 }
 
@@ -447,10 +439,12 @@ static int aufs_sync_fs(struct super_block *sb, int wait)
 			continue;
 
 		h_sb = au_sbr_sb(sb, bindex);
-		e = vfsub_sync_filesystem(h_sb, wait);
-		if (unlikely(e && !err))
-			err = e;
-		/* go on even if an error happens */
+		if (h_sb->s_op->sync_fs) {
+			e = h_sb->s_op->sync_fs(h_sb, wait);
+			if (unlikely(e && !err))
+				err = e;
+			/* go on even if an error happens */
+		}
 	}
 	si_read_unlock(sb);
 
@@ -474,8 +468,7 @@ static void aufs_put_super(struct super_block *sb)
 
 /* ---------------------------------------------------------------------- */
 
-void *au_array_alloc(unsigned long long *hint, au_arraycb_t cb,
-		     struct super_block *sb, void *arg)
+void *au_array_alloc(unsigned long long *hint, au_arraycb_t cb, void *arg)
 {
 	void *array;
 	unsigned long long n, sz;
@@ -500,7 +493,7 @@ void *au_array_alloc(unsigned long long *hint, au_arraycb_t cb,
 		goto out;
 	}
 
-	n = cb(sb, array, *hint, arg);
+	n = cb(array, *hint, arg);
 	AuDebugOn(n > *hint);
 
 out:
@@ -508,7 +501,7 @@ out:
 	return array;
 }
 
-static unsigned long long au_iarray_cb(struct super_block *sb, void *a,
+static unsigned long long au_iarray_cb(void *a,
 				       unsigned long long max __maybe_unused,
 				       void *arg)
 {
@@ -519,7 +512,7 @@ static unsigned long long au_iarray_cb(struct super_block *sb, void *a,
 	n = 0;
 	p = a;
 	head = arg;
-	spin_lock(&sb->s_inode_list_lock);
+	spin_lock(&inode_sb_list_lock);
 	list_for_each_entry(inode, head, i_sb_list) {
 		if (!au_is_bad_inode(inode)
 		    && au_ii(inode)->ii_btop >= 0) {
@@ -533,7 +526,7 @@ static unsigned long long au_iarray_cb(struct super_block *sb, void *a,
 			spin_unlock(&inode->i_lock);
 		}
 	}
-	spin_unlock(&sb->s_inode_list_lock);
+	spin_unlock(&inode_sb_list_lock);
 
 	return n;
 }
@@ -541,7 +534,7 @@ static unsigned long long au_iarray_cb(struct super_block *sb, void *a,
 struct inode **au_iarray_alloc(struct super_block *sb, unsigned long long *max)
 {
 	*max = au_ninodes(sb);
-	return au_array_alloc(max, au_iarray_cb, sb, &sb->s_inodes);
+	return au_array_alloc(max, au_iarray_cb, &sb->s_inodes);
 }
 
 void au_iarray_free(struct inode **a, unsigned long long max)
@@ -834,7 +827,7 @@ static int aufs_remount_fs(struct super_block *sb, int *flags, char *data)
 out_mtx:
 	mutex_unlock(&inode->i_mutex);
 out_opts:
-	free_page((unsigned long)opts.opt);
+	au_delayed_free_page((unsigned long)opts.opt);
 out:
 	err = cvt_err(err);
 	AuTraceErr(err);
@@ -975,7 +968,7 @@ out_info:
 	kobject_put(&sbinfo->si_kobj);
 	sb->s_fs_info = NULL;
 out_opts:
-	free_page((unsigned long)opts.opt);
+	au_delayed_free_page((unsigned long)opts.opt);
 out:
 	AuTraceErr(err);
 	err = cvt_err(err);

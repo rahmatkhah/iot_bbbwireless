@@ -445,9 +445,6 @@ struct dma_pl330_chan {
 
 	/* for cyclic capability */
 	bool cyclic;
-
-	/* for runtime pm tracking */
-	bool active;
 };
 
 struct pl330_dmac {
@@ -1201,9 +1198,6 @@ static inline int _loop(unsigned dry_run, u8 buf[],
 	unsigned lcnt0, lcnt1, ljmp0, ljmp1;
 	struct _arg_LPEND lpend;
 
-	if (*bursts == 1)
-		return _bursts(dry_run, buf, pxs, 1);
-
 	/* Max iterations possible in DMALP is 256 */
 	if (*bursts >= 256*256) {
 		lcnt1 = 256;
@@ -1430,8 +1424,8 @@ static int pl330_submit_req(struct pl330_thread *thrd,
 		goto xfer_exit;
 
 	if (ret > pl330->mcbufsz / 2) {
-		dev_info(pl330->ddma.dev, "%s:%d Try increasing mcbufsz (%i/%i)\n",
-				__func__, __LINE__, ret, pl330->mcbufsz / 2);
+		dev_info(pl330->ddma.dev, "%s:%d Trying increasing mcbufsz\n",
+				__func__, __LINE__);
 		ret = -ENOMEM;
 		goto xfer_exit;
 	}
@@ -1997,7 +1991,6 @@ static void pl330_tasklet(unsigned long data)
 		_stop(pch->thread);
 		spin_unlock(&pch->thread->dmac->lock);
 		power_down = true;
-		pch->active = false;
 	} else {
 		/* Make sure the PL330 Channel thread is active */
 		spin_lock(&pch->thread->dmac->lock);
@@ -2019,7 +2012,6 @@ static void pl330_tasklet(unsigned long data)
 			desc->status = PREP;
 			list_move_tail(&desc->node, &pch->work_list);
 			if (power_down) {
-				pch->active = true;
 				spin_lock(&pch->thread->dmac->lock);
 				_start(pch->thread);
 				spin_unlock(&pch->thread->dmac->lock);
@@ -2134,7 +2126,6 @@ static int pl330_terminate_all(struct dma_chan *chan)
 	unsigned long flags;
 	struct pl330_dmac *pl330 = pch->dmac;
 	LIST_HEAD(list);
-	bool power_down = false;
 
 	pm_runtime_get_sync(pl330->ddma.dev);
 	spin_lock_irqsave(&pch->lock, flags);
@@ -2145,8 +2136,6 @@ static int pl330_terminate_all(struct dma_chan *chan)
 	pch->thread->req[0].desc = NULL;
 	pch->thread->req[1].desc = NULL;
 	pch->thread->req_running = -1;
-	power_down = pch->active;
-	pch->active = false;
 
 	/* Mark all desc done */
 	list_for_each_entry(desc, &pch->submitted_list, node) {
@@ -2164,8 +2153,6 @@ static int pl330_terminate_all(struct dma_chan *chan)
 	list_splice_tail_init(&pch->completed_list, &pl330->desc_pool);
 	spin_unlock_irqrestore(&pch->lock, flags);
 	pm_runtime_mark_last_busy(pl330->ddma.dev);
-	if (power_down)
-		pm_runtime_put_autosuspend(pl330->ddma.dev);
 	pm_runtime_put_autosuspend(pl330->ddma.dev);
 
 	return 0;
@@ -2312,7 +2299,6 @@ static void pl330_issue_pending(struct dma_chan *chan)
 		 * updated on work_list emptiness status.
 		 */
 		WARN_ON(list_empty(&pch->submitted_list));
-		pch->active = true;
 		pm_runtime_get_sync(pch->dmac->ddma.dev);
 	}
 	list_splice_tail_init(&pch->submitted_list, &pch->work_list);
@@ -2598,13 +2584,11 @@ pl330_prep_dma_memcpy(struct dma_chan *chan, dma_addr_t dst,
 {
 	struct dma_pl330_desc *desc;
 	struct dma_pl330_chan *pch = to_pchan(chan);
-	struct pl330_dmac *pl330;
+	struct pl330_dmac *pl330 = pch->dmac;
 	int burst;
 
 	if (unlikely(!pch || !len))
 		return NULL;
-
-	pl330 = pch->dmac;
 
 	desc = __pl330_prep_dma_memcpy(pch, dst, src, len);
 	if (!desc)

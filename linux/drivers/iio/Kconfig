@@ -46,17 +46,10 @@ config IIO_CONSUMERS_PER_TRIGGER
 	This value controls the maximum number of consumers that a
 	given trigger may handle. Default is 2.
 
-config IIO_SW_DEVICE
-	tristate "Enable software IIO device support"
-	select IIO_CONFIGFS
-	help
-	 Provides IIO core support for software devices. A software
-	 device can be created via configfs or directly by a driver
-	 using the API provided.
-
 config IIO_SW_TRIGGER
 	tristate "Enable software triggers support"
 	select IIO_CONFIGFS
+	depends on BROKEN
 	help
 	 Provides IIO core support for software triggers. A software
 	 trigger can be created via configfs or directly by a driver
@@ -89,7 +82,6 @@ endif #IIO_TRIGGER
 source "drivers/iio/potentiometer/Kconfig"
 source "drivers/iio/pressure/Kconfig"
 source "drivers/iio/proximity/Kconfig"
-source "drivers/iio/pulse/Kconfig"
 source "drivers/iio/temperature/Kconfig"
 
 endif # IIO

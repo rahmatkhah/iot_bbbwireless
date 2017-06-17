@@ -676,6 +676,7 @@ found:
 		break;
 	}
 
+	/* No matching nfs_client found. */
 	spin_unlock(&nn->nfs_client_lock);
 	dprintk("NFS: <-- %s status = %d\n", __func__, status);
 	nfs_put_client(prev);
@@ -729,7 +730,10 @@ static bool nfs4_cb_match_client(const struct sockaddr *addr,
 		return false;
 
 	/* Match only the IP address, not the port number */
-	return rpc_cmp_addr(addr, clap);
+	if (!nfs_sockaddr_match_ipaddr(addr, clap))
+		return false;
+
+	return true;
 }
 
 /*

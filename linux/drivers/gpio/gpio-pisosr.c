@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2015 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C) 2015-2016 Texas Instruments Incorporated - http://www.ti.com/
  *	Andrew F. Davis <afd@ti.com>
  *
  * This program is free software; you can redistribute it and/or
@@ -17,6 +17,7 @@
 #include <linux/gpio/driver.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/of.h>
 #include <linux/spi/spi.h>
 
 #define DEFAULT_NGPIO 8
@@ -51,17 +52,19 @@ static int pisosr_gpio_refresh(struct pisosr_gpio *gpio)
 	mutex_lock(&gpio->lock);
 
 	if (gpio->load_gpio) {
-		gpiod_set_value_cansleep(gpio->load_gpio, 1);
+		gpiod_set_value(gpio->load_gpio, 1);
 		udelay(1); /* registers load time (~10ns) */
-		gpiod_set_value_cansleep(gpio->load_gpio, 0);
+		gpiod_set_value(gpio->load_gpio, 0);
 		udelay(1); /* registers recovery time (~5ns) */
 	}
 
 	ret = spi_read(gpio->spi, gpio->buffer, gpio->buffer_size);
+	if (ret)
+		return ret;
 
 	mutex_unlock(&gpio->lock);
 
-	return ret;
+	return 0;
 }
 
 static int pisosr_gpio_get_direction(struct gpio_chip *chip,
@@ -130,12 +133,15 @@ static int pisosr_gpio_probe(struct spi_device *spi)
 	if (!gpio->buffer)
 		return -ENOMEM;
 
-	gpio->load_gpio = devm_gpiod_get_optional(dev, "load", GPIOD_OUT_LOW);
+	gpio->load_gpio = devm_gpiod_get(dev, "load", GPIOD_OUT_LOW);
 	if (IS_ERR(gpio->load_gpio)) {
 		ret = PTR_ERR(gpio->load_gpio);
-		if (ret != -EPROBE_DEFER)
-			dev_err(dev, "Unable to allocate load GPIO\n");
-		return ret;
+		if (ret != -ENOENT && ret != -ENOSYS) {
+			if (ret != -EPROBE_DEFER)
+				dev_err(dev, "Unable to allocate load GPIO\n");
+			return ret;
+		}
+		gpio->load_gpio = NULL;
 	}
 
 	mutex_init(&gpio->lock);
